@@ -1,0 +1,68 @@
+name: chatbot
+description: "A new Flutter project."
+publish_to: 'none' 
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.8.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  intl: ^0.20.2
+  intl_phone_field: ^3.2.0
+  cupertino_icons: ^1.0.8
+  fl_chart: ^0.64.0
+  image_picker: ^1.0.4
+  flutter_colorpicker: ^1.0.3
+  url_launcher: ^6.2.5
+  google_fonts: ^6.1.0
+  firebase_core: ^2.32.0
+  firebase_auth: ^4.17.9
+  firebase_analytics: ^10.10.7
+  firebase_storage: ^11.6.10
+  cloud_firestore: ^4.17.5
+  file_picker: ^8.0.7
+  csv: ^5.1.1
+  string_similarity: ^2.0.0
+  firebase_auth_web: ^5.0.0
+  google_sign_in: ^6.1.4
+  lottie: ^2.7.0
+  cloudinary_public: ^0.23.1
+  path_provider: ^2.1.2
+  http: ^1.4.0
+  mime: ^1.0.4
+  path: ^1.8.3
+  http_parser: ^4.0.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/DHVSU-LOGO.png
+    - assets/images/defaultDP.jpg
+    - assets/images/dhvbot.png
+    - assets/images/dhvsu.jpg
+    - assets/images/1.png
+    - assets/images/2.png
+    - assets/images/3.png
+    - assets/images/google.png
+    - assets/images/aira.png
+    - assets/images/jereme.png
+    - assets/images/kisses.png
+    - assets/images/lloyd.png
+    - assets/images/mariel.png
+    - assets/images/noemi.png
+    - assets/animations/Live chatbot.json
+    - assets/animations/Loading Dots Blue.json
+    - assets/animations/Loading Lottie animation.json
+    - assets/animations/Loading Spinner (Dots).json
+    - assets/images/web-search.png
+    - assets/images/no-data.png
+
+
+
