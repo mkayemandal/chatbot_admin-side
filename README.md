@@ -1,16 +1,32 @@
-# chatbot
+## Chatbot Admin Dashboard
 
-A new Flutter project.
+This is the Admin Panel of the AskPSU System — a Flutter-based application designed for Pampanga State University.
+It enables administrators to manage chatbot data, monitor feedback, and analyze chatbot usage in real time through a secure, intuitive interface.
 
-## Getting Started
+## Features
 
-This project is a starting point for a Flutter application.
+Chatbot Data Management — Add, edit, or delete chatbot responses and datasets stored in Firestore.
 
-A few resources to get you started if this is your first Flutter project:
+Audit Logs — Automatically tracks all admin activities such as data edits, file uploads, and deletions.
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+Feedback Management — View, classify, and respond directly to user feedback.
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Notifications System — Sends updates or acknowledgment messages to users.
+
+Admin Role Control — Supports both Admin and Super Admin accounts with role-based access.
+
+Analytics Dashboard — View insights on chatbot usage, feedback trends, and admin actions.
+
+File Uploads — Upload CSV datasets and manage uploaded files directly from the dashboard.
+
+Realtime Sync with Firebase — Updates are instantly reflected across connected clients.
+
+## Tech Stack
+
+Frontend: Flutter (Dart)
+
+Backend: Firebase Firestore, Firebase Auth, Firebase Storage
+
+UI Framework: Material Design + Responsive Layouts
+
+Hosting: Firebase Hosting / Local Build
