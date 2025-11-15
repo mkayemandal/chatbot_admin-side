@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:lottie/lottie.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:chatbot/services/encryption_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:chatbot/admin/dashboard.dart';
 import 'package:chatbot/admin/chatlogs.dart';
@@ -11,6 +12,7 @@ import 'package:chatbot/admin/profile.dart';
 import 'package:chatbot/adminlogin.dart';
 import 'package:chatbot/admin/chatbotfiles.dart';
 import 'package:chatbot/admin/usersinfo.dart';
+import 'package:chatbot/admin/statistics.dart';
 
 const primarycolor = Color(0xFFffc803);
 const primarycolordark = Color(0xFF550100);
@@ -50,6 +52,10 @@ class _ProfileButtonState extends State<ProfileButton> {
 
   @override
   Widget build(BuildContext context) {
+    // Use MediaQuery to detect small screen
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isSmallScreen = screenWidth < 600;
+
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => isHovered = true),
@@ -63,42 +69,52 @@ class _ProfileButtonState extends State<ProfileButton> {
           margin: const EdgeInsets.only(right: 12),
           padding: const EdgeInsets.symmetric(horizontal: 14),
           decoration: BoxDecoration(
-            color: isHovered ? Colors.grey.withOpacity(0.15) : Colors.transparent,
+            color: isHovered
+                ? Colors.grey.withOpacity(0.15)
+                : Colors.transparent,
             borderRadius: BorderRadius.circular(15),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircleAvatar(
-                radius: 18,
-                backgroundImage: AssetImage(widget.imageUrl),
-                backgroundColor: Colors.grey[200],
-              ),
-              const SizedBox(width: 10),
-              Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.name,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: dark,
-                      fontFamily: 'Poppins',
+          child: isSmallScreen
+              ? CircleAvatar(
+                  radius: 18,
+                  backgroundImage: widget.imageUrl.startsWith('http')
+                      ? NetworkImage(widget.imageUrl)
+                      : AssetImage(widget.imageUrl) as ImageProvider,
+                  backgroundColor: Colors.grey[200],
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircleAvatar(
+                      radius: 18,
+                      backgroundImage: widget.imageUrl.startsWith('http')
+                          ? NetworkImage(widget.imageUrl)
+                          : AssetImage(widget.imageUrl) as ImageProvider,
+                      backgroundColor: Colors.grey[200],
                     ),
-                  ),
-                  Text(
-                    widget.role,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: dark,
-                      fontFamily: 'Poppins',
+                    const SizedBox(width: 10),
+                    Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.name,
+                          style: GoogleFonts.poppins(
+                            fontWeight: FontWeight.bold,
+                            color: dark,
+                          ),
+                        ),
+                        Text(
+                          widget.role,
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            color: dark,
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
-            ],
-          ),
+                  ],
+                ),
         ),
       ),
     );
@@ -117,13 +133,37 @@ class _FeedbacksPageState extends State<FeedbacksPage> {
   final TextEditingController _searchController = TextEditingController();
   String _selectedFilter = 'All';
   String fullName = '';
-
+  String? adminDepartment;
   bool _adminInfoLoaded = false;
   bool _feedbacksLoaded = false;
+
+  final _encryptionService = EncryptionService();
 
   // For Application Logo
   String? _applicationLogoUrl;
   bool _logoLoaded = false;
+
+  // Department map (admin display -> stored value)
+  final Map<String, String> _departmentMap = {
+    'About PSU': 'AboutPSU',
+    'Academic Honors': 'AcademicHonors',
+    'Accredited RSO': 'RSO',
+    'Administrative': 'Administrative',
+    'College of Arts and Sciences': 'CAS',
+    'College of Business Administration and Accountancy': 'CBAA',
+    'College of Computing Studies': 'CCS',
+    'College of Education': 'COE',
+    'College of Engineering and Architecture': 'CEA',
+    'College of Hospitality and Tourism Management': 'CHTM',
+    'College of Industrial Technology': 'CIT',
+    'Management Information Systems Office': 'MIS',
+    'Multipurpose Cooperative Office': 'COOP',
+    'Office of Admission': 'Admission',
+    'Office of Culture and the Arts': 'OCA',
+    'Office of Registrar': 'Registrar',
+    'Office of Student Affairs and Development': 'OSA',
+    'Office of Student Welfare and Formation': 'OSWF',
+  };
 
   bool get _allDataLoaded => _adminInfoLoaded && _feedbacksLoaded && _logoLoaded;
 
@@ -135,8 +175,9 @@ class _FeedbacksPageState extends State<FeedbacksPage> {
   }
 
   Future<void> _initializePage() async {
+    await _loadAdminInfo();
+
     await Future.wait([
-      _loadAdminInfo(),
       _loadFeedbacks(),
       _loadApplicationLogo(),
     ]);
@@ -177,12 +218,17 @@ class _FeedbacksPageState extends State<FeedbacksPage> {
             .collection('Admin')
             .doc(user.uid)
             .get();
-        if (doc.exists) {
-          final data = doc.data();
-          final firstName = data?['firstName'] ?? '';
-          final lastName = data?['lastName'] ?? '';
+
+        if (doc.exists && doc.data() != null) {
+          final data = doc.data() as Map<String, dynamic>;
+
+          final fetchedFirstName = data['firstName'] ?? '';
+          final fetchedLastName = data['lastName'] ?? '';
+          final fetchedDepartment = data['department'] ?? 'No Department';
+
           setState(() {
-            fullName = capitalizeEachWord('$firstName $lastName');
+            fullName = capitalizeEachWord('$fetchedFirstName $fetchedLastName');
+            adminDepartment = fetchedDepartment;
             _adminInfoLoaded = true;
           });
         } else {
@@ -197,55 +243,257 @@ class _FeedbacksPageState extends State<FeedbacksPage> {
     }
   }
 
+  // Helper: map adminDepartment to stored feedback department
+  String _mapAdminDepartmentToFeedback(String adminDept) {
+    final adminLower = adminDept.trim().toLowerCase();
+
+    // exact key match
+    final exactKey = _departmentMap.keys.firstWhere(
+      (k) => k.toLowerCase() == adminLower,
+      orElse: () => '',
+    );
+    if (exactKey.isNotEmpty) return _departmentMap[exactKey]!;
+
+    // partial / token match
+    for (final entry in _departmentMap.entries) {
+      final keyLower = entry.key.toLowerCase();
+      if (adminLower.contains(keyLower) || keyLower.contains(adminLower)) {
+        return entry.value;
+      }
+      final adminTokens = adminLower.split(RegExp(r'\s+'));
+      final keyTokens = keyLower.split(RegExp(r'\s+'));
+      if (adminTokens.any((t) => keyTokens.contains(t)) || keyTokens.any((t) => adminTokens.contains(t))) {
+        return entry.value;
+      }
+    }
+
+    // fallback: remove "office" / "of"
+    var cleaned = adminDept.replaceAll(RegExp(r'\boffice\b|\bof\b', caseSensitive: false), '').trim();
+    if (cleaned.isEmpty) return capitalizeEachWord(adminDept);
+    return capitalizeEachWord(cleaned);
+  }
+
+  // Helper to format various timestamp types
+  String _formatTimestamp(dynamic ts) {
+    try {
+      if (ts == null) return '';
+      if (ts is Timestamp) {
+        return DateFormat('MM-dd-yyyy h:mm a').format(ts.toDate());
+      } else if (ts is int) {
+        return DateFormat('MM-dd-yyyy h:mm a').format(DateTime.fromMillisecondsSinceEpoch(ts));
+      } else if (ts is DateTime) {
+        return DateFormat('MM-dd-yyyy h:mm a').format(ts);
+      } else {
+        return ts.toString();
+      }
+    } catch (e) {
+      print('Timestamp format error: $e');
+      return ts?.toString() ?? '';
+    }
+  }
+
+  Future<String?> _findUserIdByEmail(String email) async {
+    if (email.isEmpty) return null;
+
+    try {
+      // Step 1: Try to find by plain email first (backwards compatibility)
+      var userSnapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .where('email', isEqualTo: email)
+          .limit(1)
+          .get();
+
+      if (userSnapshot.docs.isNotEmpty) {
+        print('✅ Found user by plain email');
+        return userSnapshot.docs.first.id;
+      }
+
+      // Step 2: If not found, search through all users and decrypt emails
+      print('🔍 Searching for user with encrypted email...');
+      final allUsersSnapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .get();
+
+      for (var doc in allUsersSnapshot.docs) {
+        final data = doc.data();
+        final encryptedEmail = data['email'] as String?;
+
+        if (encryptedEmail != null && encryptedEmail.isNotEmpty) {
+          try {
+            // Check if it's already plain text (contains @)
+            if (encryptedEmail.contains('@')) {
+              if (encryptedEmail.toLowerCase() == email.toLowerCase()) {
+                print('✅ Found user by plain email in doc');
+                return doc.id;
+              }
+            } else {
+              // Try to decrypt
+              final decryptedEmail = await _encryptionService.decryptValue(encryptedEmail);
+              if (decryptedEmail.toLowerCase() == email.toLowerCase()) {
+                print('✅ Found user by decrypted email');
+                return doc.id;
+              }
+            }
+          } catch (e) {
+            // Skip this document if decryption fails
+            continue;
+          }
+        }
+      }
+
+      print('⚠️ User not found with email: $email');
+      return null;
+    } catch (e) {
+      print('❌ Error finding user by email: $e');
+      return null;
+    }
+  }
+
   Future<void> _loadFeedbacks() async {
     try {
+      if (adminDepartment == null || adminDepartment!.isEmpty) {
+        print('Admin department not loaded yet.');
+        setState(() => _feedbacksLoaded = true);
+        return;
+      }
+
+      final mappedDepartment = _mapAdminDepartmentToFeedback(adminDepartment!);
+      final normalizedDepartment = mappedDepartment.trim().toLowerCase();
+
+      print(
+          'Fetching feedbacks for admin department: "$adminDepartment" -> filtering by: "$mappedDepartment" (normalized: $normalizedDepartment)');
+
       final snapshot = await FirebaseFirestore.instance
-          .collection('Feedbacks')
+          .collection('feedback')
           .orderBy('timestamp', descending: false)
           .get();
 
-      final List<Map<String, dynamic>> loadedFeedbacks = snapshot.docs.map((
-        doc,
-      ) {
-        final data = doc.data();
-        return {
-          'docId': doc.id,
-          'feedback': data['message'] ?? '',
-          'sentiment': data['sentiment'] ?? 'neutral',
-          'user': capitalizeEachWord(data['name'] ?? 'Unknown'),
-          'email': data['email'] ?? '',
-          'timestamp': data['timestamp'] != null
-              ? DateFormat(
-                  'MM-dd-yyyy h:mm a',
-                ).format((data['timestamp'] as Timestamp).toDate())
-              : '',
-          'status': data['status'] ?? 'new',
-          'botResponse': data['botResponse'] ?? '',
-        };
+      final filteredDocs = snapshot.docs.where((doc) {
+        final data = doc.data() as Map<String, dynamic>;
+        final deptRaw =
+            (data['department'] ?? data['Department'] ?? '').toString().trim().toLowerCase();
+        return deptRaw == normalizedDepartment;
       }).toList();
+
+      print('Fetched ${filteredDocs.length} feedbacks after department mapping/filtering.');
+
+      // ✅ DECRYPT EMAILS WHILE MAPPING
+      final List<Map<String, dynamic>> loadedFeedbacks = [];
+      
+      for (var doc in filteredDocs) {
+        final data = doc.data() as Map<String, dynamic>;
+
+        final feedbackText = (data['feedbackComment'] ??
+                data['feedback_comment'] ??
+                data['message'] ??
+                data['feedback'] ??
+                '')
+            .toString();
+
+        final isPositiveRaw = data['isPositive'] ?? data['is_positive'] ?? false;
+        final sentiment = (isPositiveRaw == true ||
+                isPositiveRaw.toString().toLowerCase() == 'true')
+            ? 'positive'
+            : 'negative';
+
+        final userNameRaw =
+            (data['user_name'] ?? data['userName'] ?? data['user'] ?? '').toString().trim();
+        
+        // ✅ DECRYPT EMAIL HERE
+        final userEmailRaw =
+            (data['user_email'] ?? data['userEmail'] ?? data['email'] ?? '').toString().trim();
+        
+        String decryptedEmail = '';
+        if (userEmailRaw.isNotEmpty) {
+          try {
+            // Check if email is already plain text (contains @)
+            if (userEmailRaw.contains('@')) {
+              decryptedEmail = userEmailRaw;
+              print('📧 Email already plain text: $decryptedEmail');
+            } else {
+              // Decrypt encrypted email
+              decryptedEmail = await _encryptionService.decryptValue(userEmailRaw);
+              print('🔓 Decrypted email: $decryptedEmail');
+            }
+          } catch (e) {
+            print('⚠️ Failed to decrypt email for doc ${doc.id}: $e');
+            decryptedEmail = '[Encrypted]'; // Fallback display
+          }
+        }
+        
+        final uidRaw = (data['uid'] ?? data['userId'] ?? '').toString().trim();
+        final timestampDisplay = _formatTimestamp(data['timestamp']);
+        final statusValue = (data['status'] ?? 'new').toString();
+
+        loadedFeedbacks.add({
+          'docId': doc.id,
+          'feedback': feedbackText,
+          'sentiment': sentiment,
+          'user_name': userNameRaw.isNotEmpty ? userNameRaw : '',
+          'user_email': decryptedEmail, // ✅ Store decrypted email
+          'user_email_encrypted': userEmailRaw, // ✅ Keep encrypted for later use
+          'user': userNameRaw.isNotEmpty
+              ? capitalizeEachWord(userNameRaw)
+              : (decryptedEmail.isNotEmpty
+                  ? decryptedEmail.split('@').first
+                  : (uidRaw.isNotEmpty ? uidRaw : 'Unknown User')),
+          'email': decryptedEmail, // ✅ Decrypted email
+          'uid': uidRaw,
+          'timestamp': timestampDisplay,
+          'status': statusValue,
+          'question': data['question'] ?? '',
+          'answer': data['answer'] ?? '',
+          'department': data['department'] ?? data['Department'] ?? '',
+          '_raw': data,
+        });
+      }
+
+      // Sort by timestamp
+      DateTime? _parseRawTs(dynamic raw) {
+        if (raw == null) return null;
+        if (raw is Timestamp) return raw.toDate();
+        if (raw is DateTime) return raw;
+        if (raw is String) return DateTime.tryParse(raw);
+        return null;
+      }
+
+      loadedFeedbacks.sort((a, b) {
+        final aDate = _parseRawTs(a['_raw']?['timestamp']);
+        final bDate = _parseRawTs(b['_raw']?['timestamp']);
+        if (aDate == null && bDate == null) return 0;
+        if (aDate == null) return 1;
+        if (bDate == null) return -1;
+        return aDate.compareTo(bDate);
+      });
 
       setState(() {
         feedbackList = loadedFeedbacks;
         _feedbacksLoaded = true;
       });
-    } catch (e) {
-      print('Error loading feedbacks: $e');
+    } catch (e, st) {
+      print('Error loading feedbacks: $e\n$st');
       setState(() => _feedbacksLoaded = true);
     }
   }
 
   List<Map<String, dynamic>> _getFeedbacksByStatus(String status) {
-  final query = _searchController.text.toLowerCase();
-  final filter = _selectedFilter.toLowerCase();
+    final query = _searchController.text.toLowerCase();
+    final filter = _selectedFilter.toLowerCase();
 
-  return feedbackList.where((item) {
-    final matchesStatus = item['status'] == status;
-    final matchesQuery = item['feedback'].toLowerCase().contains(query) ||
-                         item['user'].toLowerCase().contains(query); // <-- changed
-    final matchesFilter = filter == 'all' || item['sentiment'].toLowerCase() == filter;
-    return matchesStatus && matchesQuery && matchesFilter;
-  }).toList();
-}
+    final matchesNewTab = (item) =>
+        (item['status'] == 'new' || item['status'] == 'transferred');
+
+    return feedbackList.where((item) {
+      final matchesStatus = (status == 'new') ? matchesNewTab(item) : (item['status'] == status);
+
+      // combine user-name/email/uid for searching
+      final userFieldsCombined = '${(item['user_name'] ?? '')} ${(item['user'] ?? '')} ${(item['user_email'] ?? '')} ${(item['email'] ?? '')}'.toLowerCase();
+
+      final matchesQuery = (item['feedback'] ?? '').toString().toLowerCase().contains(query) || userFieldsCombined.contains(query);
+      final matchesFilter = filter == 'all' || (item['sentiment'] ?? '').toString().toLowerCase() == filter;
+      return matchesStatus && matchesQuery && matchesFilter;
+    }).toList();
+  }
 
   Future<void> _updateFeedbackStatus(
     BuildContext context,
@@ -255,30 +503,78 @@ class _FeedbacksPageState extends State<FeedbacksPage> {
     String successMessage,
   ) async {
     try {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('Feedbacks')
-          .where('message', isEqualTo: item['feedback'])
-          .where('email', isEqualTo: item['email'])
-          .limit(1)
-          .get();
+      final firestore = FirebaseFirestore.instance;
 
-      if (snapshot.docs.isNotEmpty) {
-        await snapshot.docs.first.reference.update({'status': newStatus});
+      // Prefer updating by docId (safer)
+      final docId = item['docId'] as String?;
+      if (docId != null && docId.isNotEmpty) {
+        final docRef = firestore.collection('feedback').doc(docId);
+        await docRef.update({'status': newStatus});
+        print('Updated feedback $docId → $newStatus (by docId)');
         await Future.delayed(const Duration(milliseconds: 200));
         await refresh();
 
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(successMessage, style: GoogleFonts.poppins(color: Colors.white)),
+            content: Text(
+              successMessage,
+              style: GoogleFonts.poppins(color: Colors.white),
+            ),
             duration: const Duration(seconds: 2),
             backgroundColor: primarycolor,
             behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
           ),
         );
+        return;
       }
-    } catch (e) {
-      print('Error updating feedback status: $e');
+
+      // Fallback: try matching by fields (legacy)
+      final feedbackText = (item['feedback'] ?? '').toString().trim();
+      final userEmail = (item['email'] ?? '').toString().trim();
+
+      QuerySnapshot<Map<String, dynamic>> snapshot = await firestore
+          .collection('feedback')
+          .where('feedback_comment', isEqualTo: feedbackText)
+          .limit(1)
+          .get();
+
+      if (snapshot.docs.isEmpty) {
+        snapshot = await firestore
+            .collection('feedback')
+            .where('feedbackComment', isEqualTo: feedbackText)
+            .limit(1)
+            .get();
+      }
+
+      if (snapshot.docs.isNotEmpty) {
+        final docRef = snapshot.docs.first.reference;
+        await docRef.update({'status': newStatus});
+        print('Updated feedback ${docRef.id} → $newStatus (fallback match)');
+        await Future.delayed(const Duration(milliseconds: 200));
+        await refresh();
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              successMessage,
+              style: GoogleFonts.poppins(color: Colors.white),
+            ),
+            duration: const Duration(seconds: 2),
+            backgroundColor: primarycolor,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
+          ),
+        );
+      } else {
+        print("⚠️ No matching feedback found for update.");
+      }
+    } catch (e, st) {
+      print('Error updating feedback status: $e\n$st');
     }
   }
 
@@ -298,13 +594,9 @@ class _FeedbacksPageState extends State<FeedbacksPage> {
               fit: BoxFit.contain,
             ),
             const SizedBox(height: 20),
-            const Text(
+            Text(
               "No item to show.",
-              style: TextStyle(
-                fontSize: 14,
-                color: Colors.grey,
-                fontFamily: 'Poppins',
-              ),
+              style: GoogleFonts.poppins(fontSize: 14, color: Colors.grey),
             ),
           ],
         ),
@@ -381,111 +673,125 @@ class _FeedbacksPageState extends State<FeedbacksPage> {
     final reviewedCount = feedbackList.where((f) => f['status'] == 'reviewed').length;
     final archivedCount = feedbackList.where((f) => f['status'] == 'archived').length;
 
-    return Scaffold(
-      drawer: NavigationDrawer(
-        applicationLogoUrl: _applicationLogoUrl,
-        activePage: "Feedbacks",
-      ),
-      appBar: AppBar(
-        backgroundColor: lightBackground,
-        iconTheme: const IconThemeData(color: primarycolordark),
-        elevation: 0,
-        titleSpacing: 0,
-        title: const Row(
-          children: [
-            SizedBox(width: 12),
-            Text("Feedbacks", style: TextStyle(color: primarycolordark, fontWeight: FontWeight.bold, fontFamily: 'Poppins')),
+    // apply Poppins theme locally
+    final poppinsTextTheme = GoogleFonts.poppinsTextTheme(Theme.of(context).textTheme)
+        .apply(bodyColor: dark, displayColor: dark);
+
+    return Theme(
+      data: Theme.of(context).copyWith(textTheme: poppinsTextTheme, primaryTextTheme: poppinsTextTheme),
+      child: Scaffold(
+        drawer: NavigationDrawer(
+          applicationLogoUrl: _applicationLogoUrl,
+          activePage: "Feedbacks",
+        ),
+        appBar: AppBar(
+          backgroundColor: lightBackground,
+          iconTheme: const IconThemeData(color: primarycolordark),
+          elevation: 0,
+          titleSpacing: 0,
+          title: Row(
+            children: [
+              const SizedBox(width: 12),
+              Flexible(
+                child: Text(
+                  "Feedbacks",
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.poppins(color: primarycolordark, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            Padding(
+              padding: const EdgeInsets.only(right: 16.0),
+              child: ProfileButton(
+                imageUrl: "assets/images/defaultDP.jpg",
+                name: fullName.trim().isNotEmpty ? fullName : "Loading...",
+                role: "Admin - ${adminDepartment ?? 'No Department'}",
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const AdminProfilePage()),
+                  );
+                },
+              ),
+            ),
           ],
         ),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 16.0),
-            child: ProfileButton(
-              imageUrl: "assets/images/defaultDP.jpg",
-              name: fullName.trim().isNotEmpty ? fullName : "Loading...",
-              role: "Admin",
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const AdminProfilePage()),
-                );
-              },
-            ),
+        backgroundColor: lightBackground,
+        body: DefaultTabController(
+          length: 3,
+          child: Column(
+            children: [
+              const SizedBox(height: 16),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32.0),
+                child: Column(
+                  children: [
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        int columns = constraints.maxWidth > 800 ? 3 : 1;
+                        double spacing = 12;
+                        double totalSpacing = (columns - 1) * spacing;
+                        double cardWidth = (constraints.maxWidth - totalSpacing) / columns;
+                        return Wrap(
+                          spacing: spacing,
+                          runSpacing: spacing,
+                          children: [
+                            StatCard(title: "Total Feedback", value: "${feedbackList.length}", color: primarycolordark, width: cardWidth),
+                            StatCard(title: "Positive Feedback", value: "${feedbackList.where((f) => f['sentiment'] == 'positive').length}", color: primarycolor, width: cardWidth),
+                            StatCard(title: "Negative Feedback", value: "${feedbackList.where((f) => f['sentiment'] == 'negative').length}", color: secondarycolor, width: cardWidth),
+                          ],
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 24),
+                    Row(
+                      children: [
+                        Expanded(child: SearchBar(controller: _searchController)),
+                        const SizedBox(width: 12),
+                        FilterDropdown(
+                          selectedFilter: _selectedFilter,
+                          onChanged: (value) {
+                            if (value != null) {
+                              setState(() {
+                                _selectedFilter = value;
+                              });
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              TabBar(
+                labelColor: primarycolor,
+                unselectedLabelColor: dark,
+                indicatorColor: primarycolor,
+                indicatorWeight: 3,
+                indicatorPadding: const EdgeInsets.symmetric(horizontal: 16),
+                labelStyle: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 14),
+                tabs: [
+                  Tab(text: 'New ($newCount)'),
+                  Tab(text: 'Reviewed ($reviewedCount)'),
+                  Tab(text: 'Archived ($archivedCount)'),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: TabBarView(
+                  children: [
+                    _buildFeedbackList('new'),
+                    _buildFeedbackList('reviewed'),
+                    _buildFeedbackList('archived'),
+                  ],
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
-      backgroundColor: lightBackground,
-      body: DefaultTabController(
-        length: 3,
-        child: Column(
-          children: [
-            const SizedBox(height: 16),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32.0),
-              child: Column(
-                children: [
-                  LayoutBuilder(
-                    builder: (context, constraints) {
-                      int columns = constraints.maxWidth > 800 ? 3 : 1;
-                      double spacing = 12;
-                      double totalSpacing = (columns - 1) * spacing;
-                      double cardWidth = (constraints.maxWidth - totalSpacing) / columns;
-                      return Wrap(
-                        spacing: spacing,
-                        runSpacing: spacing,
-                        children: [
-                          StatCard(title: "Total Feedback", value: "${feedbackList.length}", color: primarycolordark, width: cardWidth),
-                          StatCard(title: "Positive Feedback", value: "${feedbackList.where((f) => f['sentiment'] == 'positive').length}", color: primarycolor, width: cardWidth),
-                          StatCard(title: "Negative Feedback", value: "${feedbackList.where((f) => f['sentiment'] == 'negative').length}", color: secondarycolor, width: cardWidth),
-                        ],
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 24),
-                  Row(
-                    children: [
-                      Expanded(child: SearchBar(controller: _searchController)),
-                      const SizedBox(width: 12),
-                      FilterDropdown(
-                        selectedFilter: _selectedFilter,
-                        onChanged: (value) {
-                          if (value != null) {
-                            setState(() {
-                              _selectedFilter = value;
-                            });
-                          }
-                        },
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            TabBar(
-              labelColor: primarycolor,
-              unselectedLabelColor: dark,
-              indicatorColor: primarycolor,
-              indicatorWeight: 3,
-              indicatorPadding: const EdgeInsets.symmetric(horizontal: 16),
-              labelStyle: const TextStyle(fontFamily: 'Poppins', fontWeight: FontWeight.bold, fontSize: 14),
-              tabs: [
-                Tab(text: 'New ($newCount)'),
-                Tab(text: 'Reviewed ($reviewedCount)'),
-                Tab(text: 'Archived ($archivedCount)'),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Expanded(
-              child: TabBarView(
-                children: [
-                  _buildFeedbackList('new'),
-                  _buildFeedbackList('reviewed'),
-                  _buildFeedbackList('archived'),
-                ],
-              ),
-            ),
-          ],
         ),
       ),
     );
@@ -512,18 +818,46 @@ class FeedbackCard extends StatelessWidget {
     required this.onRefresh,
   });
 
-  // Helper to check guest
+  // Only treat as guest when explicitly flagged in the raw document
   bool isGuestFeedback(Map<String, dynamic> feedback) {
-    final email = feedback['email'] ?? '';
-    return email.startsWith('guest_') || email.isEmpty;
+    final raw = feedback['_raw'] as Map<String, dynamic>?;
+    if (raw != null) {
+      if (raw['isGuest'] == true || raw['is_guest'] == true) return true;
+    }
+    return false;
   }
 
   @override
   Widget build(BuildContext context) {
-    final isPositive = feedback['sentiment'] == 'positive';
+    final isPositive = (feedback['sentiment'] ?? '').toString() == 'positive';
     final sentimentLabel = isPositive ? "Positive" : "Negative";
     final sentimentColor = isPositive ? Colors.green : Colors.red;
-    final isGuest = isGuestFeedback(feedback);
+
+    final bool isGuest = isGuestFeedback(feedback);
+
+    // Get values
+    final rawName = (feedback['user_name'] ?? '').toString().trim();
+    final decryptedEmail = (feedback['user_email'] ?? feedback['email'] ?? '').toString().trim(); // ✅ Already decrypted
+    final rawUid = (feedback['uid'] ?? feedback['user'] ?? '').toString().trim();
+
+    String displayUser;
+    if (isGuest) {
+      displayUser = 'Guest User';
+    } else if (rawName.isNotEmpty) {
+      displayUser = capitalizeEachWord(rawName);
+    } else if (decryptedEmail.isNotEmpty && decryptedEmail != '[Encrypted]') {
+      displayUser = decryptedEmail.split('@').first;
+    } else if (rawUid.isNotEmpty) {
+      displayUser = rawUid;
+    } else {
+      displayUser = 'Unknown User';
+    }
+
+    final displayEmail = isGuest ? '' : decryptedEmail; // ✅ Use decrypted email
+
+    final hasEmail = decryptedEmail.isNotEmpty && decryptedEmail != '[Encrypted]';
+    final hasUserName = rawName.isNotEmpty;
+    final bool legacyIsGuest = isGuest || !(hasEmail || hasUserName);
 
     return Card(
       color: Colors.white,
@@ -535,7 +869,7 @@ class FeedbackCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // User Info & Timestamp
+            // ✅ User Info & Timestamp - UPDATED
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -544,23 +878,22 @@ class FeedbackCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        feedback['user'],
-                        style: const TextStyle(
+                        displayUser,
+                        style: GoogleFonts.poppins(
                           fontWeight: FontWeight.bold,
                           fontSize: 14,
                           color: dark,
-                          fontFamily: 'Poppins',
                         ),
                       ),
                       const SizedBox(height: 2),
+                      // ✅ SHOW DECRYPTED EMAIL
                       Text(
-                        isGuest
-                          ? "Guest ID: ${feedback['docId'] ?? 'n/a'}"
-                          : "Email: ${feedback['email'] ?? 'n/a'}",
-                        style: const TextStyle(
+                        legacyIsGuest
+                            ? "Guest ID: ${feedback['docId'] ?? 'n/a'}"
+                            : "Email: ${displayEmail.isNotEmpty && displayEmail != '[Encrypted]' ? displayEmail : 'n/a'}",
+                        style: GoogleFonts.poppins(
                           fontSize: 12,
-                          color: dark,
-                          fontFamily: 'Poppins',
+                          color: displayEmail == '[Encrypted]' ? Colors.red : dark,
                         ),
                       ),
                     ],
@@ -569,10 +902,9 @@ class FeedbackCard extends StatelessWidget {
                 const SizedBox(width: 12),
                 Text(
                   feedback['timestamp'] ?? '',
-                  style: const TextStyle(
+                  style: GoogleFonts.poppins(
                     fontSize: 12,
                     color: dark,
-                    fontFamily: 'Poppins',
                   ),
                 ),
               ],
@@ -581,7 +913,7 @@ class FeedbackCard extends StatelessWidget {
             const SizedBox(height: 12),
 
             // Bot Response
-            if ((feedback['botResponse'] ?? '').isNotEmpty)
+            if ((feedback['answer'] ?? '').toString().isNotEmpty)
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(12),
@@ -591,16 +923,14 @@ class FeedbackCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Text(
-                  "${feedback['botResponse']}",
-                  style: const TextStyle(
+                  "${feedback['answer']}",
+                  style: GoogleFonts.poppins(
                     fontSize: 13,
-                    fontFamily: 'Poppins',
                     color: dark,
                   ),
                 ),
               ),
 
-            // Feedback + Sentiment
             Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
@@ -616,21 +946,19 @@ class FeedbackCard extends StatelessWidget {
                   ),
                   child: Text(
                     sentimentLabel,
-                    style: TextStyle(
+                    style: GoogleFonts.poppins(
                       fontSize: 12,
                       color: sentimentColor,
                       fontWeight: FontWeight.bold,
-                      fontFamily: 'Poppins',
                     ),
                   ),
                 ),
                 Expanded(
                   child: Text(
-                    feedback['feedback'],
-                    style: const TextStyle(
+                    feedback['feedback'] ?? '',
+                    style: GoogleFonts.poppins(
                       fontSize: 14,
                       color: dark,
-                      fontFamily: 'Poppins',
                     ),
                   ),
                 ),
@@ -639,13 +967,13 @@ class FeedbackCard extends StatelessWidget {
 
             const SizedBox(height: 16),
 
-            // Buttons
+            // ✅ UPDATED BUTTON SECTION - Use decrypted email
             if (currentStatus == 'new') ...[
               LayoutBuilder(
                 builder: (context, constraints) {
-                  final buttonWidth = isGuest
-                    ? (constraints.maxWidth - 8) / 2
-                    : (constraints.maxWidth - 16) / 3;
+                  final buttonWidth = legacyIsGuest
+                      ? (constraints.maxWidth - 8) / 2
+                      : (constraints.maxWidth - 16) / 3;
 
                   return Row(
                     children: [
@@ -653,11 +981,8 @@ class FeedbackCard extends StatelessWidget {
                         width: buttonWidth,
                         child: OutlinedButton.icon(
                           onPressed: onMarkReviewed,
-                          icon: const Icon(
-                            Icons.check_circle_outline,
-                            size: 16,
-                          ),
-                          label: const Text("Mark as Reviewed"),
+                          icon: const Icon(Icons.check_circle_outline, size: 16),
+                          label: Text("Mark as Reviewed", style: GoogleFonts.poppins()),
                           style: OutlinedButton.styleFrom(
                             foregroundColor: primarycolor,
                             side: const BorderSide(color: primarycolor),
@@ -668,83 +993,117 @@ class FeedbackCard extends StatelessWidget {
                               horizontal: 8,
                               vertical: 12,
                             ),
-                            textStyle: const TextStyle(fontSize: 12),
+                            textStyle: GoogleFonts.poppins(fontSize: 12),
                           ),
                         ),
                       ),
                       const SizedBox(width: 8),
-                      if (!isGuest) ...[
+                      if (!legacyIsGuest) ...[
                         SizedBox(
                           width: buttonWidth,
                           child: ElevatedButton.icon(
                             onPressed: () async {
-                              final email = feedback['email'];
-                              final name = feedback['user'];
-                              final currentUser =
-                                  FirebaseAuth.instance.currentUser;
+                              // ✅ USE DECRYPTED EMAIL (already available)
+                              final email = decryptedEmail;
+                              final name = feedback['user_name'] ?? feedback['user'] ?? '';
+                              final currentUser = FirebaseAuth.instance.currentUser;
+
+                              if (email.isEmpty || email == '[Encrypted]') {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      "Cannot find user email.",
+                                      style: GoogleFonts.poppins(color: Colors.white),
+                                    ),
+                                  ),
+                                );
+                                return;
+                              }
 
                               try {
-                                // Fetch the userId from 'users' collection based on email
-                                final userSnapshot = await FirebaseFirestore
-                                    .instance
+                                // ✅ Find user by DECRYPTED email
+                                String? userId;
+
+                                // Try direct query first
+                                var userSnapshot = await FirebaseFirestore.instance
                                     .collection('users')
                                     .where('email', isEqualTo: email)
                                     .limit(1)
                                     .get();
 
-                                if (userSnapshot.docs.isEmpty) {
+                                if (userSnapshot.docs.isNotEmpty) {
+                                  userId = userSnapshot.docs.first.id;
+                                  print('✅ Found user by direct email query');
+                                } else {
+                                  // Search all users and decrypt
+                                  print('🔍 Searching all users with decryption...');
+                                  final allUsers = await FirebaseFirestore.instance
+                                      .collection('users')
+                                      .get();
+
+                                  for (var doc in allUsers.docs) {
+                                    final userData = doc.data();
+                                    final userEncryptedEmail = userData['email'] as String?;
+
+                                    if (userEncryptedEmail != null && userEncryptedEmail.isNotEmpty) {
+                                      try {
+                                        String userEmail;
+                                        if (userEncryptedEmail.contains('@')) {
+                                          userEmail = userEncryptedEmail;
+                                        } else {
+                                          userEmail = await EncryptionService()
+                                              .decryptValue(userEncryptedEmail);
+                                        }
+
+                                        if (userEmail.toLowerCase() == email.toLowerCase()) {
+                                          userId = doc.id;
+                                          print('✅ Found user by decrypted email match');
+                                          break;
+                                        }
+                                      } catch (e) {
+                                        continue;
+                                      }
+                                    }
+                                  }
+                                }
+
+                                if (userId == null) {
                                   ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text("User not found."),
+                                    SnackBar(
+                                      content: Text(
+                                        "User not found in system.",
+                                        style: GoogleFonts.poppins(color: Colors.white),
+                                      ),
                                     ),
                                   );
                                   return;
                                 }
 
-                                final userId = userSnapshot.docs.first.id;
-
                                 if (isPositive) {
+                                  final encryptedEmailForNotification = await EncryptionService()
+                                    .encryptValue(decryptedEmail);
                                   // Send thank-you notification
                                   await FirebaseFirestore.instance
                                       .collection('Notifications')
                                       .add({
-                                        'userId': userId,
-                                        'email': email,
-                                        'title': 'Thank You',
-                                        'message':
-                                            "Thank you $name for your kind words. We're glad you're satisfied!",
-                                        'timestamp': FieldValue.serverTimestamp(),
-                                        'status': 'unread',
-                                        'sentBy': currentUser?.email ?? 'admin',
-                                      });
+                                    'userId': userId,
+                                    'email': encryptedEmailForNotification, 
+                                    'title': 'Thank You',
+                                    'message':
+                                        "Thank you ${name.isNotEmpty ? name : ''} for your kind words. We're glad you're satisfied!",
+                                    'timestamp': FieldValue.serverTimestamp(),
+                                    'status': 'unread',
+                                    // 'sentBy': currentUser?.email ?? 'admin',
+                                  });
 
-                                  // Update feedback status
-                                  await FirebaseFirestore.instance
-                                      .collection('Feedbacks')
-                                      .where(
-                                        'message',
-                                        isEqualTo: feedback['feedback'],
-                                      )
-                                      .where('email', isEqualTo: email)
-                                      .limit(1)
-                                      .get()
-                                      .then((snapshot) {
-                                        if (snapshot.docs.isNotEmpty) {
-                                          snapshot.docs.first.reference.update({
-                                            'status': 'reviewed',
-                                          });
-                                        }
-                                      });
-
+                                  onMarkReviewed();
                                   await onRefresh();
 
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     SnackBar(
                                       content: Text(
                                         "Thank you message sent!",
-                                        style: GoogleFonts.poppins(
-                                          color: Colors.white,
-                                        ),
+                                        style: GoogleFonts.poppins(color: Colors.white),
                                       ),
                                       duration: const Duration(seconds: 2),
                                       backgroundColor: primarycolor,
@@ -755,11 +1114,10 @@ class FeedbackCard extends StatelessWidget {
                                     ),
                                   );
                                 } else {
-                                  // Respond directly (dialog)
-                                  final String userName =
-                                      feedback['user'] ?? 'User';
-                                  final TextEditingController
-                                  _responseController = TextEditingController();
+                                  // Respond directly dialog
+                                  final String userName = feedback['user'] ?? 'User';
+                                  final TextEditingController responseController =
+                                      TextEditingController();
 
                                   await showDialog(
                                     context: context,
@@ -779,8 +1137,7 @@ class FeedbackCard extends StatelessWidget {
                                         width: 400,
                                         child: Column(
                                           mainAxisSize: MainAxisSize.min,
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
+                                          crossAxisAlignment: CrossAxisAlignment.start,
                                           children: [
                                             Text(
                                               'Your response will be sent to $userName.',
@@ -791,25 +1148,20 @@ class FeedbackCard extends StatelessWidget {
                                             ),
                                             const SizedBox(height: 12),
                                             TextField(
-                                              controller: _responseController,
+                                              controller: responseController,
                                               maxLines: 5,
                                               decoration: InputDecoration(
-                                                hintText:
-                                                    'Type your response here...',
-                                                hintStyle: GoogleFonts.poppins(
-                                                  color: dark,
-                                                ),
+                                                hintText: 'Type your response here...',
+                                                hintStyle: GoogleFonts.poppins(color: dark),
                                                 filled: true,
                                                 fillColor: Colors.white,
                                                 border: OutlineInputBorder(
-                                                  borderRadius:
-                                                      BorderRadius.circular(8),
+                                                  borderRadius: BorderRadius.circular(8),
                                                   borderSide: const BorderSide(
                                                     color: Color(0xFFCCCCCC),
                                                   ),
                                                 ),
-                                                contentPadding:
-                                                    const EdgeInsets.all(12),
+                                                contentPadding: const EdgeInsets.all(12),
                                               ),
                                             ),
                                           ],
@@ -824,9 +1176,7 @@ class FeedbackCard extends StatelessWidget {
                                           onPressed: () => Navigator.pop(context),
                                           child: Text(
                                             'Cancel',
-                                            style: GoogleFonts.poppins(
-                                              color: dark,
-                                            ),
+                                            style: GoogleFonts.poppins(color: dark),
                                           ),
                                         ),
                                         ElevatedButton(
@@ -838,103 +1188,41 @@ class FeedbackCard extends StatelessWidget {
                                               vertical: 12,
                                             ),
                                             shape: RoundedRectangleBorder(
-                                              borderRadius: BorderRadius.circular(
-                                                8,
-                                              ),
+                                              borderRadius: BorderRadius.circular(8),
                                             ),
                                           ),
                                           onPressed: () async {
                                             final responseText =
-                                                _responseController.text.trim();
+                                                responseController.text.trim();
 
                                             if (responseText.isNotEmpty) {
                                               Navigator.pop(context);
 
                                               try {
-                                                final currentUser = FirebaseAuth
-                                                    .instance
-                                                    .currentUser;
-                                                final email = feedback['email'];
-
-                                                final userSnapshot =
-                                                    await FirebaseFirestore
-                                                        .instance
-                                                        .collection('users')
-                                                        .where(
-                                                          'email',
-                                                          isEqualTo: email,
-                                                        )
-                                                        .limit(1)
-                                                        .get();
-
-                                                if (userSnapshot.docs.isEmpty) {
-                                                  ScaffoldMessenger.of(
-                                                    context,
-                                                  ).showSnackBar(
-                                                    const SnackBar(
-                                                      content: Text(
-                                                        "User not found.",
-                                                      ),
-                                                    ),
-                                                  );
-                                                  return;
-                                                }
-
-                                                final userId =
-                                                    userSnapshot.docs.first.id;
-
                                                 final fullMessage =
                                                     "$responseText\n\nIf you have further concerns, feel free to contact us at support@dhvsu.edu.ph or call (045) 123-4567.";
+
+                                                final encryptedEmailForNotification = await EncryptionService()
+                                                 .encryptValue(decryptedEmail);    
 
                                                 await FirebaseFirestore.instance
                                                     .collection('Notifications')
                                                     .add({
-                                                      'userId': userId,
-                                                      'email': email,
-                                                      'title':
-                                                          'Feedback Response',
-                                                      'message': fullMessage,
-                                                      'timestamp':
-                                                          FieldValue.serverTimestamp(),
-                                                      'status': 'unread',
-                                                      'sentBy':
-                                                          currentUser?.email ??
-                                                          'super admin',
-                                                    });
+                                                  'userId': userId,
+                                                  'email': encryptedEmailForNotification,
+                                                  'title': 'Feedback Response',
+                                                  'message': fullMessage,
+                                                  'timestamp':
+                                                      FieldValue.serverTimestamp(),
+                                                  'status': 'unread',
+                                                  // 'sentBy':
+                                                  //     currentUser?.email ?? 'super admin',
+                                                });
 
-                                                await FirebaseFirestore.instance
-                                                    .collection('Feedbacks')
-                                                    .where(
-                                                      'message',
-                                                      isEqualTo:
-                                                          feedback['feedback'],
-                                                    )
-                                                    .where(
-                                                      'email',
-                                                      isEqualTo: email,
-                                                    )
-                                                    .limit(1)
-                                                    .get()
-                                                    .then((snapshot) {
-                                                      if (snapshot
-                                                          .docs
-                                                          .isNotEmpty) {
-                                                        snapshot
-                                                            .docs
-                                                            .first
-                                                            .reference
-                                                            .update({
-                                                              'status':
-                                                                  'reviewed',
-                                                            });
-                                                      }
-                                                    });
-
+                                                onMarkReviewed();
                                                 await onRefresh();
 
-                                                ScaffoldMessenger.of(
-                                                  context,
-                                                ).showSnackBar(
+                                                ScaffoldMessenger.of(context).showSnackBar(
                                                   SnackBar(
                                                     content: Text(
                                                       "Response sent and saved!",
@@ -942,27 +1230,17 @@ class FeedbackCard extends StatelessWidget {
                                                         color: Colors.white,
                                                       ),
                                                     ),
-                                                    duration: const Duration(
-                                                      seconds: 2,
-                                                    ),
+                                                    duration: const Duration(seconds: 2),
                                                     backgroundColor: primarycolor,
-                                                    behavior:
-                                                        SnackBarBehavior.floating,
+                                                    behavior: SnackBarBehavior.floating,
                                                     shape: RoundedRectangleBorder(
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                            8,
-                                                          ),
+                                                      borderRadius: BorderRadius.circular(8),
                                                     ),
                                                   ),
                                                 );
                                               } catch (e) {
-                                                print(
-                                                  'Error sending response: $e',
-                                                );
-                                                ScaffoldMessenger.of(
-                                                  context,
-                                                ).showSnackBar(
+                                                print('Error sending response: $e');
+                                                ScaffoldMessenger.of(context).showSnackBar(
                                                   SnackBar(
                                                     content: Text(
                                                       "Failed to send response",
@@ -970,18 +1248,8 @@ class FeedbackCard extends StatelessWidget {
                                                         color: Colors.white,
                                                       ),
                                                     ),
-                                                    duration: const Duration(
-                                                      seconds: 2,
-                                                    ),
+                                                    duration: const Duration(seconds: 2),
                                                     backgroundColor: Colors.red,
-                                                    behavior:
-                                                        SnackBarBehavior.floating,
-                                                    shape: RoundedRectangleBorder(
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                            8,
-                                                          ),
-                                                    ),
                                                   ),
                                                 );
                                               }
@@ -1005,16 +1273,10 @@ class FeedbackCard extends StatelessWidget {
                                   SnackBar(
                                     content: Text(
                                       "Unexpected error",
-                                      style: GoogleFonts.poppins(
-                                        color: Colors.white,
-                                      ),
+                                      style: GoogleFonts.poppins(color: Colors.white),
                                     ),
                                     duration: const Duration(seconds: 2),
                                     backgroundColor: Colors.red,
-                                    behavior: SnackBarBehavior.floating,
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
                                   ),
                                 );
                               }
@@ -1025,6 +1287,7 @@ class FeedbackCard extends StatelessWidget {
                             ),
                             label: Text(
                               isPositive ? "Send Thanks" : "Respond Directly",
+                              style: GoogleFonts.poppins(),
                             ),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: primarycolor,
@@ -1036,7 +1299,7 @@ class FeedbackCard extends StatelessWidget {
                                 horizontal: 8,
                                 vertical: 12,
                               ),
-                              textStyle: const TextStyle(fontSize: 12),
+                              textStyle: GoogleFonts.poppins(fontSize: 12),
                             ),
                           ),
                         ),
@@ -1047,7 +1310,7 @@ class FeedbackCard extends StatelessWidget {
                         child: ElevatedButton.icon(
                           onPressed: onArchive,
                           icon: const Icon(Icons.archive_outlined, size: 16),
-                          label: const Text("Archive"),
+                          label: Text("Archive", style: GoogleFonts.poppins()),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: secondarycolor,
                             foregroundColor: Colors.white,
@@ -1058,7 +1321,7 @@ class FeedbackCard extends StatelessWidget {
                               horizontal: 8,
                               vertical: 12,
                             ),
-                            textStyle: const TextStyle(fontSize: 12),
+                            textStyle: GoogleFonts.poppins(fontSize: 12),
                           ),
                         ),
                       ),
@@ -1073,7 +1336,7 @@ class FeedbackCard extends StatelessWidget {
                   ElevatedButton.icon(
                     onPressed: onUnarchive,
                     icon: const Icon(Icons.unarchive),
-                    label: const Text("Unarchive"),
+                    label: Text("Unarchive", style: GoogleFonts.poppins()),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: primarycolor,
                       foregroundColor: Colors.white,
@@ -1084,7 +1347,7 @@ class FeedbackCard extends StatelessWidget {
                         horizontal: 12,
                         vertical: 12,
                       ),
-                      textStyle: const TextStyle(fontSize: 12),
+                      textStyle: GoogleFonts.poppins(fontSize: 12),
                     ),
                   ),
                 ],
@@ -1149,20 +1412,18 @@ class _StatCardState extends State<StatCard> {
           children: [
             Text(
               widget.value,
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 fontSize: 24,
                 fontWeight: FontWeight.bold,
                 color: widget.color,
-                fontFamily: 'Poppins',
               ),
             ),
             const SizedBox(height: 4),
             Text(
               widget.title,
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 fontSize: 14,
                 color: widget.color.withOpacity(0.9),
-                fontFamily: 'Poppins',
               ),
             ),
           ],
@@ -1180,13 +1441,10 @@ class SearchBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return TextField(
       controller: controller,
-      style: const TextStyle(
-        fontFamily: 'Poppins',
-        color: dark,
-      ),
+      style: GoogleFonts.poppins(color: dark),
       decoration: InputDecoration(
         hintText: 'Search user...',
-        hintStyle: const TextStyle(color: dark),
+        hintStyle: GoogleFonts.poppins(color: dark),
         prefixIcon: const Icon(Icons.search, color: primarycolor),
         filled: true,
         fillColor: Colors.white,
@@ -1227,11 +1485,8 @@ class FilterDropdown extends StatelessWidget {
         child: DropdownButton<String>(
           value: selectedFilter,
           onChanged: onChanged,
-          dropdownColor: lightBackground, 
-          style: const TextStyle(
-            fontFamily: 'Poppins',
-            color: dark,
-          ),
+          dropdownColor: lightBackground,
+          style: GoogleFonts.poppins(color: dark),
           icon: const Icon(Icons.filter_list, color: primarycolordark),
           items: ['All', 'Positive', 'Negative'].map((filter) {
             return DropdownMenuItem<String>(
@@ -1242,10 +1497,7 @@ class FilterDropdown extends StatelessWidget {
                   padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
                   child: Text(
                     filter,
-                    style: const TextStyle(
-                      fontFamily: 'Poppins',
-                      color: dark,
-                    ),
+                    style: GoogleFonts.poppins(color: dark),
                   ),
                 ),
               ),
@@ -1259,7 +1511,7 @@ class FilterDropdown extends StatelessWidget {
 
 class NavigationDrawer extends StatelessWidget {
   final String? applicationLogoUrl;
-  final String activePage; 
+  final String activePage;
   const NavigationDrawer({super.key, this.applicationLogoUrl, required this.activePage,});
 
   @override
@@ -1297,14 +1549,21 @@ class NavigationDrawer extends StatelessWidget {
             );
           },
           isActive: activePage == "Dashboard",),
-          _drawerItem(context, Icons.people_outline, "Users Info", () {
+          _drawerItem(context, Icons.analytics_outlined, "Statistics", () {
             Navigator.pop(context);
             Navigator.push(
               context,
-              MaterialPageRoute(builder: (_) => const UserinfoPage()),
+              MaterialPageRoute(builder: (_) => const ChatbotStatisticsPage()),
             );
-          },
-          isActive: activePage == "Users Info",),
+          }, isActive: activePage == "Statistics",),
+          // _drawerItem(context, Icons.people_outline, "Users Info", () {
+          //   Navigator.pop(context);
+          //   Navigator.push(
+          //     context,
+          //     MaterialPageRoute(builder: (_) => const UserinfoPage()),
+          //   );
+          // },
+          // isActive: activePage == "Users Info",),
           _drawerItem(context, Icons.chat_outlined, "Chat Logs", () {
             Navigator.pop(context);
             Navigator.push(
@@ -1338,14 +1597,34 @@ class NavigationDrawer extends StatelessWidget {
           },
           isActive: activePage == "Chatbot Files",),
           const Spacer(),
-          _drawerItem(context, Icons.logout, "Logout", () {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (_) => const AdminLoginPage()),
-            );
-          },
-          isLogout: true,
-          isActive: false
+          _drawerItem(
+            context,
+            Icons.logout,
+            "Logout",
+            () async {
+              try {
+                // Sign out the user
+                await FirebaseAuth.instance.signOut();
+
+                // Optional: Clear local storage if you used SharedPreferences
+                // final prefs = await SharedPreferences.getInstance();
+                // await prefs.clear();
+
+                // Replace the entire route stack with the login page
+                Navigator.pushAndRemoveUntil(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AdminLoginPage()),
+                  (route) => false,
+                );
+              } catch (e) {
+                print("Logout error: $e");
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text("Logout failed. Please try again.", style: GoogleFonts.poppins())),
+                );
+              }
+            },
+            isLogout: true,
+            isActive: false,
           ),
         ],
       ),
@@ -1404,7 +1683,7 @@ class _DrawerHoverButtonState extends State<_DrawerHoverButton> {
         curve: Curves.easeInOut,
         decoration: BoxDecoration(
           color: widget.isActive
-              ? primarycolor.withOpacity(0.25) 
+              ? primarycolor.withOpacity(0.25)
               : (isHovered
                   ? primarycolor.withOpacity(0.10)
                   : Colors.transparent),
@@ -1417,10 +1696,9 @@ class _DrawerHoverButtonState extends State<_DrawerHoverButton> {
           ),
           title: Text(
             widget.title,
-            style: TextStyle(
+            style: GoogleFonts.poppins(
               color: (widget.isLogout ? Colors.red : primarycolordark),
               fontWeight: FontWeight.w600,
-              fontFamily: 'Poppins',
             ),
           ),
           onTap: widget.onTap,

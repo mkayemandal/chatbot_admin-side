@@ -1,7 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:lottie/lottie.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:encrypt/encrypt.dart' as encrypt;
+import 'dart:convert';
+import 'dart:async';
 import 'package:chatbot/admin/chatlogs.dart';
 import 'package:chatbot/admin/feedbacks.dart';
 import 'package:chatbot/admin/chatbotdata.dart';
@@ -9,6 +14,7 @@ import 'package:chatbot/admin/dashboard.dart';
 import 'package:chatbot/adminlogin.dart';
 import 'package:chatbot/admin/chatbotfiles.dart';
 import 'package:chatbot/admin/usersinfo.dart';
+import 'package:chatbot/admin/statistics.dart';
 
 const primarycolor = Color(0xFFffc803);
 const primarycolordark = Color(0xFF550100);
@@ -49,6 +55,9 @@ class _ProfileButtonState extends State<ProfileButton> {
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isSmallScreen = screenWidth < 600;
+
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => isHovered = true),
@@ -62,42 +71,52 @@ class _ProfileButtonState extends State<ProfileButton> {
           margin: const EdgeInsets.only(right: 12),
           padding: const EdgeInsets.symmetric(horizontal: 14),
           decoration: BoxDecoration(
-            color: isHovered ? Colors.grey.withOpacity(0.15) : Colors.transparent,
+            color: isHovered
+                ? Colors.grey.withOpacity(0.15)
+                : Colors.transparent,
             borderRadius: BorderRadius.circular(15),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircleAvatar(
-                radius: 18,
-                backgroundImage: AssetImage(widget.imageUrl),
-                backgroundColor: Colors.grey[200],
-              ),
-              const SizedBox(width: 10),
-              Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.name,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: dark,
-                      fontFamily: 'Poppins',
+          child: isSmallScreen
+              ? CircleAvatar(
+                  radius: 18,
+                  backgroundImage: widget.imageUrl.startsWith('http')
+                      ? NetworkImage(widget.imageUrl)
+                      : AssetImage(widget.imageUrl) as ImageProvider,
+                  backgroundColor: Colors.grey[200],
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircleAvatar(
+                      radius: 18,
+                      backgroundImage: widget.imageUrl.startsWith('http')
+                          ? NetworkImage(widget.imageUrl)
+                          : AssetImage(widget.imageUrl) as ImageProvider,
+                      backgroundColor: Colors.grey[200],
                     ),
-                  ),
-                  Text(
-                    widget.role,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: dark,
-                      fontFamily: 'Poppins',
+                    const SizedBox(width: 10),
+                    Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.name,
+                          style: GoogleFonts.poppins(
+                            fontWeight: FontWeight.bold,
+                            color: dark,
+                          ),
+                        ),
+                        Text(
+                          widget.role,
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            color: dark,
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
-            ],
-          ),
+                  ],
+                ),
         ),
       ),
     );
@@ -115,21 +134,116 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
   String firstName = '';
   String lastName = '';
   String email = '';
+  String decryptedEmail = '';
   String userType = '';
   String phone = '';
   String staffID = '';
+  String department = '';
 
   bool _adminInfoLoaded = false;
 
-  // For Application Logo
   String? _applicationLogoUrl;
   bool _logoLoaded = false;
+
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  static const String _aesKeyStorageKey = 'app_aes_key_v1';
+  encrypt.Key? _cachedKey;
 
   @override
   void initState() {
     super.initState();
     _loadAdminInfo();
     _loadApplicationLogo();
+  }
+
+  Future<encrypt.Key> _getOrCreateAesKey() async {
+    if (_cachedKey != null) return _cachedKey!;
+    
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('SystemSettings')
+          .doc('encryption_key')
+          .get();
+      
+      if (doc.exists && doc.data()?['key'] != null) {
+        final keyBase64 = doc.data()!['key'] as String;
+        final keyBytes = base64Decode(keyBase64);
+        
+        await _secureStorage.write(
+          key: _aesKeyStorageKey,
+          value: keyBase64,
+          aOptions: const AndroidOptions(encryptedSharedPreferences: true),
+          iOptions: const IOSOptions(),
+        );
+        
+        _cachedKey = encrypt.Key(keyBytes);
+        print('✅ Profile: Loaded encryption key from Firestore');
+        return _cachedKey!;
+      }
+    } catch (e) {
+      print('⚠️ Profile: Error loading key from Firestore: $e');
+    }
+    
+    final existing = await _secureStorage.read(key: _aesKeyStorageKey);
+    if (existing != null) {
+      final bytes = base64Decode(existing);
+      _cachedKey = encrypt.Key(bytes);
+      print('✅ Profile: Loaded encryption key from local storage');
+      return _cachedKey!;
+    }
+    
+    final generated = encrypt.Key.fromSecureRandom(32);
+    final keyBase64 = base64Encode(generated.bytes);
+    
+    try {
+      await FirebaseFirestore.instance
+          .collection('SystemSettings')
+          .doc('encryption_key')
+          .set({
+        'key': keyBase64,
+        'createdAt': FieldValue.serverTimestamp(),
+        'version': 'v1',
+      });
+      print('✅ Profile: Created new encryption key in Firestore');
+    } catch (e) {
+      print('⚠️ Profile: Could not save key to Firestore: $e');
+    }
+    
+    await _secureStorage.write(
+      key: _aesKeyStorageKey,
+      value: keyBase64,
+      aOptions: const AndroidOptions(encryptedSharedPreferences: true),
+      iOptions: const IOSOptions(),
+    );
+    
+    _cachedKey = generated;
+    print('✅ Profile: Created new encryption key locally');
+    return _cachedKey!;
+  }
+
+  Future<String?> _decryptValue(String encoded) async {
+    if (encoded.isEmpty) return null;
+    
+    try {
+      final key = await _getOrCreateAesKey();
+      final combined = base64Decode(encoded);
+      
+      if (combined.length < 17) {
+        print('⚠️ Encrypted data too short');
+        return null;
+      }
+      
+      final ivBytes = combined.sublist(0, 16);
+      final cipherBytes = combined.sublist(16);
+      final iv = encrypt.IV(ivBytes);
+      final encrypter = encrypt.Encrypter(encrypt.AES(key, mode: encrypt.AESMode.cbc));
+      final encrypted = encrypt.Encrypted(cipherBytes);
+      
+      return encrypter.decrypt(encrypted, iv: iv);
+    } catch (e) {
+      print('❌ Decryption failed: $e');
+      return null;
+    }
   }
 
   Future<void> _loadAdminInfo() async {
@@ -142,24 +256,54 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
             .get();
         if (doc.exists) {
           final data = doc.data()!;
+          
+          // Get encrypted email
+          final encryptedEmail = data['email'] ?? '';
+          
+          // Decrypt email
+          String displayEmail = '';
+          if (encryptedEmail.isNotEmpty) {
+            final decrypted = await _decryptValue(encryptedEmail);
+            if (decrypted != null && decrypted.isNotEmpty) {
+              displayEmail = decrypted;
+              print('✅ Profile: Successfully decrypted email');
+            } else {
+              // Fallback to Firebase Auth email
+              displayEmail = user.email ?? 'No email';
+              print('⚠️ Profile: Email decryption failed, using Firebase Auth email');
+            }
+          } else {
+            // Fallback to Firebase Auth email if no encrypted email stored
+            displayEmail = user.email ?? 'No email';
+          }
+          
           setState(() {
             firstName = capitalizeEachWord(data['firstName'] ?? '');
             lastName = capitalizeEachWord(data['lastName'] ?? '');
-            email = data['email'] ?? '';
+            email = encryptedEmail; // Keep encrypted for storage reference
+            decryptedEmail = displayEmail; // Store decrypted for display
             userType = capitalizeEachWord(data['userType'] ?? 'Admin');
             phone = _formatPhone(data['phone'] ?? '');
+            department = data['department'] ?? '';
             staffID = data['staffID']?.toString() ?? '';
             _adminInfoLoaded = true;
           });
         } else {
-          setState(() => _adminInfoLoaded = true);
+          setState(() {
+            decryptedEmail = user.email ?? 'No email';
+            _adminInfoLoaded = true;
+          });
         }
       } else {
         setState(() => _adminInfoLoaded = true);
       }
     } catch (e) {
       print('Error fetching Admin info: $e');
-      setState(() => _adminInfoLoaded = true);
+      final user = FirebaseAuth.instance.currentUser;
+      setState(() {
+        decryptedEmail = user?.email ?? 'No email';
+        _adminInfoLoaded = true;
+      });
     }
   }
 
@@ -191,25 +335,30 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
   }
 
   String _formatPhone(String raw) {
-    // Remove any non-digit characters just in case
     final digits = raw.replaceAll(RegExp(r'\D'), '');
-
-    // If it already starts with '0', return as is
-    if (digits.startsWith('0')) return digits;
-
-    // If it's empty, return blank
     if (digits.isEmpty) return '';
 
-    // Otherwise prepend '0'
+    if (digits.startsWith('63')) {
+      final number = digits.substring(2);
+      return '0$number';
+    }
+    if (raw.startsWith('+63')) {
+      final number = digits.substring(2);
+      return '0$number';
+    }
+    if (digits.startsWith('0')) return digits;
+
     return '0$digits';
   }
 
   @override
   Widget build(BuildContext context) {
+    final poppinsTextTheme = GoogleFonts.poppinsTextTheme(Theme.of(context).textTheme)
+        .apply(bodyColor: dark, displayColor: dark);
+
     final isWideScreen = MediaQuery.of(context).size.width > 800;
     final fullName = '$firstName $lastName';
 
-    // Loader screen covers everything until _adminInfoLoaded
     if (!_adminInfoLoaded) {
       return Scaffold(
         backgroundColor: lightBackground,
@@ -223,119 +372,123 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
       );
     }
 
-    return Scaffold(
-      backgroundColor: lightBackground,
-      drawer: NavigationDrawer(
-        applicationLogoUrl: _applicationLogoUrl,
-        activePage: "Your Profile",
-      ),
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        iconTheme: const IconThemeData(color: primarycolordark),
-        elevation: 0,
-        titleSpacing: 0,
-        title: const Row(
-          children: [
-            SizedBox(width: 12),
-            Text(
-              "Your Profile",
-              style: TextStyle(
-                color: primarycolordark,
-                fontWeight: FontWeight.bold,
-                fontFamily: 'Poppins',
+    return Theme(
+      data: Theme.of(context).copyWith(textTheme: poppinsTextTheme, primaryTextTheme: poppinsTextTheme),
+      child: Scaffold(
+        backgroundColor: lightBackground,
+        drawer: NavigationDrawer(
+          applicationLogoUrl: _applicationLogoUrl,
+          activePage: "Your Profile",
+        ),
+        appBar: AppBar(
+          backgroundColor: Colors.white,
+          iconTheme: const IconThemeData(color: primarycolordark),
+          elevation: 0,
+          titleSpacing: 0,
+          title: Row(
+            children: [
+              const SizedBox(width: 12),
+              Flexible(
+                child: Text(
+                  "Your Profile",
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.poppins(color: primarycolordark, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            Padding(
+              padding: const EdgeInsets.only(right: 16.0),
+              child: ProfileButton(
+                imageUrl: "assets/images/defaultDP.jpg",
+                name: fullName.trim().isNotEmpty ? fullName : "Loading...",
+                role: "Admin - ${department.isNotEmpty ? department : 'No Department'}",
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const AdminProfilePage()),
+                  );
+                },
               ),
             ),
           ],
         ),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 16.0),
-            child: ProfileButton(
-              imageUrl: "assets/images/defaultDP.jpg",
-              name: fullName.trim().isNotEmpty ? fullName : "Loading...",
-              role: "Admin",
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const AdminProfilePage()),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Card(
-          color: const Color.fromARGB(255, 249, 240, 224),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          elevation: 3,
-          child: Column(
-            children: [
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-                decoration: const BoxDecoration(
-                  color: primarycolordark,
-                  borderRadius: BorderRadius.only(
-                    topLeft: Radius.circular(16),
-                    topRight: Radius.circular(16),
+        body: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Card(
+            color: const Color.fromARGB(255, 249, 240, 224),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            elevation: 3,
+            child: Column(
+              children: [
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+                  decoration: const BoxDecoration(
+                    color: primarycolordark,
+                    borderRadius: BorderRadius.only(
+                      topLeft: Radius.circular(16),
+                      topRight: Radius.circular(16),
+                    ),
                   ),
-                ),
-                child: Row(
-                  children: [
-                    const CircleAvatar(
-                      radius: 40,
-                      backgroundImage: AssetImage('assets/images/defaultDP.jpg'),
-                    ),
-                    const SizedBox(width: 16),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          fullName.isNotEmpty ? fullName : 'Loading...',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                            fontFamily: 'Poppins',
-                          ),
-                        ),
-                        Text(
-                          email,
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 14,
-                            fontFamily: 'Poppins',
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: isWideScreen
-                    ? IntrinsicHeight(
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                  child: Row(
+                    children: [
+                      const CircleAvatar(
+                        radius: 40,
+                        backgroundImage: AssetImage('assets/images/defaultDP.jpg'),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Expanded(child: _leftCard(fullName)),
-                            const SizedBox(width: 24),
-                            Expanded(flex: 2, child: _rightCard()),
+                            Text(
+                              fullName.isNotEmpty ? fullName : 'Loading...',
+                              style: GoogleFonts.poppins(
+                                color: Colors.white,
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            Text(
+                              decryptedEmail,
+                              style: GoogleFonts.poppins(
+                                color: Colors.white70,
+                                fontSize: 14,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ],
                         ),
-                      )
-                    : Column(
-                        children: [
-                          _leftCard(fullName),
-                          const SizedBox(height: 16),
-                          _rightCard(),
-                        ],
                       ),
-              ),
-            ],
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: isWideScreen
+                      ? IntrinsicHeight(
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Expanded(child: _leftCard(fullName)),
+                              const SizedBox(width: 24),
+                              Expanded(flex: 2, child: _rightCard()),
+                            ],
+                          ),
+                        )
+                      : Column(
+                          children: [
+                            _leftCard(fullName),
+                            const SizedBox(height: 16),
+                            _rightCard(),
+                          ],
+                        ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -359,13 +512,12 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
                 topRight: Radius.circular(12),
               ),
             ),
-            child: const Text(
+            child: Text(
               'Personal Picture',
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 color: Colors.white,
                 fontSize: 16,
                 fontWeight: FontWeight.bold,
-                fontFamily: 'Poppins',
               ),
               textAlign: TextAlign.center,
             ),
@@ -381,20 +533,33 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
                 const SizedBox(height: 12),
                 Text(
                   fullName,
-                  style: const TextStyle(
+                  style: GoogleFonts.poppins(
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
-                    fontFamily: 'Poppins',
                     color: dark,
                   ),
                 ),
-                const Text(
+                const SizedBox(height: 4),
+                Text(
                   'Admin',
-                  style: TextStyle(
+                  style: GoogleFonts.poppins(
+                    fontSize: 14,
                     color: dark,
-                    fontFamily: 'Poppins',
                   ),
                 ),
+                if (department.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Center(
+                    child: Text(
+                      department,
+                      style: GoogleFonts.poppins(
+                        fontSize: 14,
+                        color: dark,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 16),
               ],
             ),
@@ -421,13 +586,12 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
                 topRight: Radius.circular(12),
               ),
             ),
-            child: const Text(
+            child: Text(
               'Personal Information',
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 color: Colors.white,
                 fontSize: 16,
                 fontWeight: FontWeight.bold,
-                fontFamily: 'Poppins',
               ),
               textAlign: TextAlign.center,
             ),
@@ -439,7 +603,8 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
                 InfoRow(label: "Staff ID", value: staffID, icon: Icons.badge_outlined),
                 InfoRow(label: "First Name", value: firstName, icon: Icons.person_outline),
                 InfoRow(label: "Last Name", value: lastName, icon: Icons.person_outline),
-                InfoRow(label: "Email", value: email, icon: Icons.email_outlined),
+                InfoRow(label: "Email", value: decryptedEmail, icon: Icons.email_outlined),
+                InfoRow(label: "Department", value: department, icon: Icons.apartment_outlined),
                 InfoRow(label: "Phone Number", value: phone, icon: Icons.phone_outlined),
                 InfoRow(label: "Usertype", value: userType, icon: Icons.security_outlined),
               ],
@@ -475,9 +640,8 @@ class InfoRow extends StatelessWidget {
             flex: 2,
             child: Text(
               label,
-              style: const TextStyle(
+              style: GoogleFonts.poppins(
                 fontWeight: FontWeight.w600,
-                fontFamily: 'Poppins',
                 color: dark,
               ),
             ),
@@ -486,10 +650,8 @@ class InfoRow extends StatelessWidget {
             flex: 3,
             child: Text(
               value,
-              style: const TextStyle(
-                fontFamily: 'Poppins',
-                color: dark,
-              ),
+              style: GoogleFonts.poppins(color: dark),
+              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],
@@ -500,7 +662,7 @@ class InfoRow extends StatelessWidget {
 
 class NavigationDrawer extends StatelessWidget {
   final String? applicationLogoUrl;
-  final String activePage; 
+  final String activePage;
   const NavigationDrawer({super.key, this.applicationLogoUrl, required this.activePage,});
 
   @override
@@ -536,24 +698,21 @@ class NavigationDrawer extends StatelessWidget {
               context,
               MaterialPageRoute(builder: (_) => const AdminDashboardPage()),
             );
-          },
-          isActive: activePage == "Dashboard",),
-          _drawerItem(context, Icons.people_outline, "Users Info", () {
+          }, isActive: activePage == "Dashboard",),
+          _drawerItem(context, Icons.analytics_outlined, "Statistics", () {
             Navigator.pop(context);
             Navigator.push(
               context,
-              MaterialPageRoute(builder: (_) => const UserinfoPage()),
+              MaterialPageRoute(builder: (_) => const ChatbotStatisticsPage()),
             );
-          },
-          isActive: activePage == "Users Info",),
+          }, isActive: activePage == "Statistics",),
           _drawerItem(context, Icons.chat_outlined, "Chat Logs", () {
             Navigator.pop(context);
             Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const ChatsPage()),
             );
-          },
-          isActive: activePage == "Chat Logs",),
+          }, isActive: activePage == "Chat Logs",),
           _drawerItem(context, Icons.feedback_outlined, "Feedbacks", () {
             Navigator.pop(context);
             Navigator.push(
@@ -579,14 +738,31 @@ class NavigationDrawer extends StatelessWidget {
           },
           isActive: activePage == "Chatbot Files",),
           const Spacer(),
-          _drawerItem(context, Icons.logout, "Logout", () {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (_) => const AdminLoginPage()),
-            );
-          },
-          isLogout: true,
-          isActive: false
+          _drawerItem(
+            context,
+            Icons.logout,
+            "Logout",
+            () async {
+              try {
+                await FirebaseAuth.instance.signOut();
+                if (context.mounted) {
+                  Navigator.pushAndRemoveUntil(
+                    context,
+                    MaterialPageRoute(builder: (_) => const AdminLoginPage()),
+                    (route) => false,
+                  );
+                }
+              } catch (e) {
+                print("Logout error: $e");
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text("Logout failed. Please try again.", style: GoogleFonts.poppins())),
+                  );
+                }
+              }
+            },
+            isLogout: true,
+            isActive: false,
           ),
         ],
       ),
@@ -619,13 +795,12 @@ class _DrawerHoverButton extends StatefulWidget {
   final bool isActive;
 
   const _DrawerHoverButton({
-    Key? key,
     required this.icon,
     required this.title,
     required this.onTap,
     this.isLogout = false,
     this.isActive = false,
-  }) : super(key: key);
+  });
 
   @override
   State<_DrawerHoverButton> createState() => _DrawerHoverButtonState();
@@ -645,7 +820,7 @@ class _DrawerHoverButtonState extends State<_DrawerHoverButton> {
         curve: Curves.easeInOut,
         decoration: BoxDecoration(
           color: widget.isActive
-              ? primarycolor.withOpacity(0.25) 
+              ? primarycolor.withOpacity(0.25)
               : (isHovered
                   ? primarycolor.withOpacity(0.10)
                   : Colors.transparent),
@@ -658,10 +833,9 @@ class _DrawerHoverButtonState extends State<_DrawerHoverButton> {
           ),
           title: Text(
             widget.title,
-            style: TextStyle(
+            style: GoogleFonts.poppins(
               color: (widget.isLogout ? Colors.red : primarycolordark),
               fontWeight: FontWeight.w600,
-              fontFamily: 'Poppins',
             ),
           ),
           onTap: widget.onTap,

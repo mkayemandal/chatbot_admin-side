@@ -5,7 +5,13 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="AskPSU Management System Admin Panel">
+
+  <!-- ✅ Prevent cached dashboard after logout -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+
   <meta name="google-signin-client_id" content="405758882255-kq4tq8i995vd7djdtc07e4b7mvd7jf75.apps.googleusercontent.com">
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 
@@ -18,18 +24,18 @@
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>chatbot</title>
+  <title>AskPSU Management System</title>
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
 
   <!-- Firebase SDKs -->
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 
   <script>
-    // TODO: Replace with your actual Firebase config
+    // ✅ Your Firebase configuration
     const firebaseConfig = {
       apiKey: "AIzaSyBxIVAxLR6KGBohr2XC3NC5AVasVJ2CvR4",
       authDomain: "chatbot-46baf.firebaseapp.com",
@@ -42,6 +48,13 @@
 
     // Initialize Firebase
     firebase.initializeApp(firebaseConfig);
+
+    // ✅ Disable browser cache on back navigation
+    window.addEventListener('pageshow', function (event) {
+      if (event.persisted) {
+        window.location.reload();
+      }
+    });
   </script>
 
   <!-- Flutter app -->

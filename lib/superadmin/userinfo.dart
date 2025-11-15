@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:lottie/lottie.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:chatbot/adminlogin.dart';
@@ -11,6 +12,9 @@ import 'package:chatbot/superadmin/chatlogs.dart';
 import 'package:chatbot/superadmin/feedbacks.dart';
 import 'package:chatbot/superadmin/settings.dart';
 import 'package:chatbot/superadmin/profile.dart';
+import 'package:chatbot/superadmin/emergencypage.dart';
+import 'package:chatbot/services/encryption_service.dart';
+import 'package:encrypt/encrypt.dart' as encrypt;
 
 const primarycolor = Color(0xFFffc803);
 const primarycolordark = Color(0xFF550100);
@@ -54,6 +58,9 @@ class _ProfileButtonState extends State<ProfileButton> {
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isSmallScreen = screenWidth < 600;
+
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => isHovered = true),
@@ -72,41 +79,400 @@ class _ProfileButtonState extends State<ProfileButton> {
                 : Colors.transparent,
             borderRadius: BorderRadius.circular(15),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircleAvatar(
-                radius: 18,
-                backgroundImage: widget.imageUrl.startsWith('http')
-                    ? NetworkImage(widget.imageUrl)
-                    : AssetImage(widget.imageUrl) as ImageProvider,
-                backgroundColor: Colors.grey[200],
-              ),
-              const SizedBox(width: 10),
-              Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.name,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: dark,
-                      fontFamily: 'Poppins',
+          child: isSmallScreen
+              ? CircleAvatar(
+                  radius: 18,
+                  backgroundImage: widget.imageUrl.startsWith('http')
+                      ? NetworkImage(widget.imageUrl)
+                      : AssetImage(widget.imageUrl) as ImageProvider,
+                  backgroundColor: Colors.grey[200],
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircleAvatar(
+                      radius: 18,
+                      backgroundImage: widget.imageUrl.startsWith('http')
+                          ? NetworkImage(widget.imageUrl)
+                          : AssetImage(widget.imageUrl) as ImageProvider,
+                      backgroundColor: Colors.grey[200],
                     ),
-                  ),
-                  Text(
-                    widget.role,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: dark,
-                      fontFamily: 'Poppins',
+                    const SizedBox(width: 10),
+                    Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.name,
+                          style: GoogleFonts.poppins(
+                            fontWeight: FontWeight.bold,
+                            color: dark,
+                          ),
+                        ),
+                        Text(
+                          widget.role,
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            color: dark,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class ManualEmailFix extends StatefulWidget {
+  const ManualEmailFix({super.key});
+
+  @override
+  State<ManualEmailFix> createState() => _ManualEmailFixState();
+}
+
+class _ManualEmailFixState extends State<ManualEmailFix> {
+  final _encryptionService = EncryptionService();
+  List<Map<String, dynamic>> _problematicUsers = [];
+  bool _isLoading = false;
+  bool _isFixing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProblematicUsers();
+  }
+
+  Future<void> _loadProblematicUsers() async {
+    setState(() => _isLoading = true);
+
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .get();
+
+      List<Map<String, dynamic>> problems = [];
+
+      for (var doc in snapshot.docs) {
+        final data = doc.data();
+        final emailField = data['email'] as String?;
+        
+        if (emailField == null || emailField.isEmpty) continue;
+
+        // Skip if already plain text (already fixed)
+        if (emailField.contains('@')) continue;
+
+        // Try to decrypt
+        bool canDecrypt = false;
+        try {
+          await _encryptionService.decryptValue(emailField);
+          canDecrypt = true;
+        } catch (e) {
+          canDecrypt = false;
+        }
+
+        if (!canDecrypt) {
+          // This user needs manual fix
+          problems.add({
+            'docId': doc.id,
+            'name': data['name'] ?? 'Unknown',
+            'username': data['username'] ?? '',
+            'encryptedEmail': emailField,
+            'studentType': data['studentType'] ?? 'Unknown',
+          });
+        }
+      }
+
+      setState(() {
+        _problematicUsers = problems;
+        _isLoading = false;
+      });
+    } catch (e) {
+      print('Error loading users: $e');
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _fixUserEmail(String docId, String plainEmail) async {
+    if (plainEmail.isEmpty || !plainEmail.contains('@')) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Invalid email format', style: GoogleFonts.poppins()),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isFixing = true);
+
+    try {
+      // Encrypt with the centralized key
+      final encrypted = await _encryptionService.encryptValue(plainEmail.toLowerCase());
+
+      // Update Firestore
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(docId)
+          .update({
+        'email': encrypted,
+        'email_fixed_at': FieldValue.serverTimestamp(),
+      });
+
+      // Reload list
+      await _loadProblematicUsers();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✅ Email fixed successfully!', style: GoogleFonts.poppins()),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Failed: $e', style: GoogleFonts.poppins()),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      setState(() => _isFixing = false);
+    }
+  }
+
+  void _showFixDialog(Map<String, dynamic> user) {
+    final emailController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(
+          'Fix Email for ${user['name']}',
+          style: GoogleFonts.poppins(fontWeight: FontWeight.bold),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Username: ${user['username']}',
+              style: GoogleFonts.poppins(fontSize: 14),
+            ),
+            Text(
+              'Type: ${user['studentType']}',
+              style: GoogleFonts.poppins(fontSize: 14),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Enter the correct email address:',
+              style: GoogleFonts.poppins(
+                fontWeight: FontWeight.w600,
+                fontSize: 14,
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: emailController,
+              decoration: InputDecoration(
+                hintText: 'user@example.com',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                prefixIcon: const Icon(Icons.email),
+              ),
+              keyboardType: TextInputType.emailAddress,
+              autofocus: true,
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.orange.shade50,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.warning_amber, color: Colors.orange, size: 16),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Contact the user to verify their email',
+                      style: GoogleFonts.poppins(fontSize: 12),
                     ),
                   ),
                 ],
               ),
-            ],
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancel', style: GoogleFonts.poppins()),
           ),
+          ElevatedButton(
+            onPressed: () {
+              final email = emailController.text.trim();
+              Navigator.pop(context);
+              _fixUserEmail(user['docId'], email);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.green,
+              foregroundColor: Colors.white,
+            ),
+            child: Text('Fix Email', style: GoogleFonts.poppins()),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.all(16),
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.build, color: Color(0xFF550100)),
+                const SizedBox(width: 8),
+                Text(
+                  'Manual Email Fix Tool',
+                  style: GoogleFonts.poppins(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: const Color(0xFF550100),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Users with emails encrypted by old keys need manual fixing.',
+              style: GoogleFonts.poppins(fontSize: 14),
+            ),
+            const SizedBox(height: 16),
+
+            if (_isLoading)
+              const Center(child: CircularProgressIndicator())
+            else if (_problematicUsers.isEmpty)
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.green.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.green),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.check_circle, color: Colors.green),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        '✅ All users have valid emails!',
+                        style: GoogleFonts.poppins(
+                          color: Colors.green.shade900,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else ...[
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.red.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.error_outline, color: Colors.red),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        '${_problematicUsers.length} users need email fixes',
+                        style: GoogleFonts.poppins(
+                          color: Colors.red.shade900,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: _problematicUsers.length,
+                separatorBuilder: (_, __) => const Divider(height: 16),
+                itemBuilder: (context, index) {
+                  final user = _problematicUsers[index];
+                  return ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: Colors.red.shade100,
+                      child: Text(
+                        user['name'].toString()[0].toUpperCase(),
+                        style: GoogleFonts.poppins(
+                          color: Colors.red.shade900,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    title: Text(
+                      user['name'],
+                      style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+                    ),
+                    subtitle: Text(
+                      'Username: ${user['username']} • Type: ${user['studentType']}',
+                      style: GoogleFonts.poppins(fontSize: 12),
+                    ),
+                    trailing: ElevatedButton.icon(
+                      onPressed: _isFixing ? null : () => _showFixDialog(user),
+                      icon: const Icon(Icons.edit, size: 16),
+                      label: Text('Fix', style: GoogleFonts.poppins(fontSize: 12)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFffc803),
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
+
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _isLoading ? null : _loadProblematicUsers,
+                icon: const Icon(Icons.refresh),
+                label: Text('Refresh List', style: GoogleFonts.poppins()),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  side: const BorderSide(color: Color(0xFF550100)),
+                  foregroundColor: const Color(0xFF550100),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -133,12 +499,13 @@ class _UserinfoPageState extends State<UserinfoPage>
   bool _adminInfoLoaded = false;
   bool _userDataLoaded = false;
 
-  // For Application Logo
   String? _applicationLogoUrl;
   bool _logoLoaded = false;
 
   List<Map<String, dynamic>> users = [];
   late AnimationController _controller;
+
+  final _encryptionService = EncryptionService();
 
   bool get _allDataLoaded =>
       _adminInfoLoaded && _userDataLoaded && _logoLoaded && _guestDataLoaded;
@@ -224,8 +591,7 @@ class _UserinfoPageState extends State<UserinfoPage>
       SnackBar(
         content: Text(
           message,
-          style: const TextStyle(
-            fontFamily: 'Poppins',
+          style: GoogleFonts.poppins(
             fontWeight: FontWeight.w500,
             color: Colors.white,
           ),
@@ -239,21 +605,139 @@ class _UserinfoPageState extends State<UserinfoPage>
     );
   }
 
+  void _showRecoverConfirmation(BuildContext context, Map<String, dynamic> user) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: lightBackground,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: Text(
+          'Recover Account?',
+          style: GoogleFonts.poppins(
+            color: primarycolordark,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        content: Text(
+          'Are you sure you want to recover ${user['name']}\'s account? This will restore their access.',
+          style: GoogleFonts.poppins(color: dark),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            style: TextButton.styleFrom(
+              foregroundColor: primarycolordark,
+              textStyle: GoogleFonts.poppins(),
+            ),
+            child: Text(
+              'Cancel',
+              style: GoogleFonts.poppins(),
+            ),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _recoverAccount(user);
+            },
+            style: TextButton.styleFrom(
+              backgroundColor: Colors.green,
+              foregroundColor: Colors.white,
+              textStyle: GoogleFonts.poppins(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            child: Text(
+              'Confirm Recover',
+              style: GoogleFonts.poppins(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // FIXED _recoverAccount method with proper null handling
   void _recoverAccount(Map user) async {
     try {
-      final userDoc = await FirebaseFirestore.instance
+      final userEmail = user['email']; // Already decrypted
+      final encryptedEmail = user['email_encrypted']; // Get encrypted version
+
+      // Validate email exists
+      if (userEmail == null || userEmail.isEmpty) {
+        showCustomSnackBar(
+          context,
+          'Invalid user email.',
+          backgroundColor: Colors.red,
+        );
+        return;
+      }
+
+      var userDoc = await FirebaseFirestore.instance
           .collection('users')
-          .where('email', isEqualTo: user['email'])
+          .where('email', isEqualTo: userEmail)
           .limit(1)
           .get();
 
-      if (userDoc.docs.isNotEmpty) {
-        await userDoc.docs.first.reference.update({'blocked': false});
+      String? foundDocId;
+      if (userDoc.docs.isEmpty && encryptedEmail != null) {
+        print('🔍 Searching for user by encrypted email...');
+        final allUsers = await FirebaseFirestore.instance
+            .collection('users')
+            .get();
+
+        for (var doc in allUsers.docs) {
+          final data = doc.data();
+          final storedEmail = data['email'] as String?;
+          
+          if (storedEmail != null && storedEmail.isNotEmpty) {
+            try {
+              String checkEmail;
+              if (storedEmail.contains('@')) {
+                checkEmail = storedEmail;
+              } else {
+                checkEmail = await _encryptionService.decryptValue(storedEmail);
+              }
+
+              if (checkEmail.toLowerCase() == userEmail.toLowerCase()) {
+                foundDocId = doc.id;
+                print('✅ Found user by decrypted email match');
+                break;
+              }
+            } catch (e) {
+              continue;
+            }
+          }
+        }
+      }
+
+      final docId = userDoc.docs.isNotEmpty ? userDoc.docs.first.id : foundDocId;
+      
+      if (docId != null) {
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(docId)
+            .update({
+          'blocked': false,
+          'blockedReason': FieldValue.delete(), 
+        });
+
+        String notificationEmail = encryptedEmail ?? '';
+        
+        if (notificationEmail.isEmpty && userEmail.isNotEmpty) {
+          try {
+            notificationEmail = await _encryptionService.encryptValue(userEmail);
+          } catch (e) {
+            print('⚠️ Failed to encrypt email for notification: $e');
+            notificationEmail = userEmail; 
+          }
+        }
 
         await FirebaseFirestore.instance.collection('Notifications').add({
-          'email': user['email'],
-          'message':
-              'Your account has been recovered and access has been restored.',
+          'userId': docId,
+          'email': notificationEmail,
+          'message': 'Your account has been recovered and access has been restored.',
           'status': 'unread',
           'title': 'Notice',
           'timestamp': Timestamp.now(),
@@ -287,26 +771,28 @@ class _UserinfoPageState extends State<UserinfoPage>
       builder: (_) => AlertDialog(
         backgroundColor: lightBackground,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        title: const Text(
+        title: Text(
           'Block User?',
-          style: TextStyle(
+          style: GoogleFonts.poppins(
             color: primarycolordark,
             fontWeight: FontWeight.bold,
-            fontFamily: 'Poppins',
           ),
         ),
         content: Text(
           'Are you sure you want to block ${user['name']}? This will restrict their access due to violations.',
-          style: const TextStyle(color: dark, fontFamily: 'Poppins'),
+          style: GoogleFonts.poppins(color: dark),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
             style: TextButton.styleFrom(
               foregroundColor: primarycolordark,
-              textStyle: const TextStyle(fontFamily: 'Poppins'),
+              textStyle: GoogleFonts.poppins(),
             ),
-            child: const Text('Cancel'),
+            child: Text(
+              'Cancel',
+              style: GoogleFonts.poppins(),
+            ),
           ),
           TextButton(
             onPressed: () {
@@ -316,12 +802,16 @@ class _UserinfoPageState extends State<UserinfoPage>
             style: TextButton.styleFrom(
               backgroundColor: Colors.red,
               foregroundColor: Colors.white,
-              textStyle: const TextStyle(
+              textStyle: GoogleFonts.poppins(
                 fontWeight: FontWeight.bold,
-                fontFamily: 'Poppins',
               ),
             ),
-            child: const Text('Confirm Block'),
+            child: Text(
+              'Confirm Block',
+              style: GoogleFonts.poppins(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
           ),
         ],
       ),
@@ -330,32 +820,100 @@ class _UserinfoPageState extends State<UserinfoPage>
 
   Future<void> _blockUser(Map<String, dynamic> user) async {
     try {
-      final userEmail = user['email'];
-      final snapshot = await FirebaseFirestore.instance
+      final userEmail = user['email']; 
+      final encryptedEmail = user['email_encrypted']; 
+
+
+      if (userEmail == null || userEmail.isEmpty) {
+        showCustomSnackBar(
+          context,
+          'Invalid user email.',
+          backgroundColor: Colors.red,
+        );
+        return;
+      }
+
+
+      var snapshot = await FirebaseFirestore.instance
           .collection('users')
           .where('email', isEqualTo: userEmail)
           .limit(1)
           .get();
 
-      if (snapshot.docs.isNotEmpty) {
-        final docId = snapshot.docs.first.id;
+
+      String? foundDocId;
+      if (snapshot.docs.isEmpty && encryptedEmail != null) {
+        print('🔍 Searching for user by encrypted email...');
+        final allUsers = await FirebaseFirestore.instance
+            .collection('users')
+            .get();
+
+        for (var doc in allUsers.docs) {
+          final data = doc.data();
+          final storedEmail = data['email'] as String?;
+          
+          if (storedEmail != null && storedEmail.isNotEmpty) {
+            try {
+              String checkEmail;
+              if (storedEmail.contains('@')) {
+                checkEmail = storedEmail;
+              } else {
+                checkEmail = await _encryptionService.decryptValue(storedEmail);
+              }
+
+              if (checkEmail.toLowerCase() == userEmail.toLowerCase()) {
+                foundDocId = doc.id;
+                print('✅ Found user by decrypted email match');
+                break;
+              }
+            } catch (e) {
+              continue;
+            }
+          }
+        }
+      }
+
+      final docId = snapshot.docs.isNotEmpty ? snapshot.docs.first.id : foundDocId;
+      
+      if (docId != null) {
+
         await FirebaseFirestore.instance.collection('users').doc(docId).update({
           'blocked': true,
+          'blockedReason': 'Blocked by administrator',
         });
 
+        String notificationEmail = encryptedEmail ?? '';
+        
+        if (notificationEmail.isEmpty && userEmail.isNotEmpty) {
+          try {
+            notificationEmail = await _encryptionService.encryptValue(userEmail);
+          } catch (e) {
+            print('⚠️ Failed to encrypt email for notification: $e');
+            notificationEmail = userEmail; 
+          }
+        }
+
         await FirebaseFirestore.instance.collection('Notifications').add({
-          'email': userEmail,
+          'userId': docId,
+          'email': notificationEmail, 
           'message': 'Your account has been blocked due to violations.',
           'status': 'unread',
           'title': 'Notice',
           'timestamp': Timestamp.now(),
         });
 
+        // Reload user list
         await _loadUserDataList();
 
         if (mounted) {
           showCustomSnackBar(context, 'User has been blocked.');
         }
+      } else {
+        showCustomSnackBar(
+          context,
+          'User not found.',
+          backgroundColor: Colors.red,
+        );
       }
     } catch (e) {
       debugPrint('Error blocking user: $e');
@@ -367,100 +925,113 @@ class _UserinfoPageState extends State<UserinfoPage>
     }
   }
 
-  void _showRecoverConfirmation(
-    BuildContext context,
-    Map<String, dynamic> user,
-  ) {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: lightBackground,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        title: const Text(
-          'Recover User Account?',
-          style: TextStyle(
-            color: primarycolordark,
-            fontWeight: FontWeight.bold,
-            fontFamily: 'Poppins',
-          ),
-        ),
-        content: Text(
-          'Are you sure you want to recover the account for ${user['name']}? Access will be restored.',
-          style: const TextStyle(color: dark, fontFamily: 'Poppins'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            style: TextButton.styleFrom(
-              foregroundColor: primarycolordark,
-              textStyle: const TextStyle(fontFamily: 'Poppins'),
-            ),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _recoverAccount(user);
-            },
-            style: TextButton.styleFrom(
-              backgroundColor: Colors.green,
-              foregroundColor: Colors.white,
-              textStyle: const TextStyle(
-                fontWeight: FontWeight.bold,
-                fontFamily: 'Poppins',
-              ),
-            ),
-            child: const Text('Confirm Recover'),
-          ),
-        ],
-      ),
-    );
-  }
-
   Future<void> _sendWarningNotification(Map<String, dynamic> user) async {
     try {
-      final userEmail = user['email'];
-      final snapshot = await FirebaseFirestore.instance
+      final userEmail = user['email']; 
+      final encryptedEmail = user['email_encrypted']; 
+
+      if (userEmail == null || userEmail.isEmpty) {
+        showCustomSnackBar(
+          context,
+          'Invalid user email.',
+          backgroundColor: Colors.red,
+        );
+        return;
+      }
+
+      var snapshot = await FirebaseFirestore.instance
           .collection('users')
           .where('email', isEqualTo: userEmail)
           .limit(1)
           .get();
 
-      if (snapshot.docs.isNotEmpty) {
-        final docId = snapshot.docs.first.id;
+      String? foundDocId;
+      if (snapshot.docs.isEmpty && encryptedEmail != null) {
+        print('🔍 Searching for user by encrypted email...');
+        final allUsers = await FirebaseFirestore.instance
+            .collection('users')
+            .get();
+
+        for (var doc in allUsers.docs) {
+          final data = doc.data();
+          final storedEmail = data['email'] as String?;
+          
+          if (storedEmail != null && storedEmail.isNotEmpty) {
+            try {
+              String checkEmail;
+              if (storedEmail.contains('@')) {
+                checkEmail = storedEmail;
+              } else {
+                checkEmail = await _encryptionService.decryptValue(storedEmail);
+              }
+
+              if (checkEmail.toLowerCase() == userEmail.toLowerCase()) {
+                foundDocId = doc.id;
+                print('✅ Found user by decrypted email match');
+                break;
+              }
+            } catch (e) {
+              continue;
+            }
+          }
+        }
+      }
+
+      final docId = snapshot.docs.isNotEmpty ? snapshot.docs.first.id : foundDocId;
+
+      if (docId != null) {
+
+        String notificationEmail = encryptedEmail ?? '';
+        
+        if (notificationEmail.isEmpty && userEmail.isNotEmpty) {
+          try {
+            notificationEmail = await _encryptionService.encryptValue(userEmail);
+          } catch (e) {
+            print('⚠️ Failed to encrypt email for notification: $e');
+            notificationEmail = userEmail; 
+          }
+        }
 
         await FirebaseFirestore.instance.collection('Notifications').add({
           'userId': docId,
-          'email': userEmail,
+          'email': notificationEmail, 
           'title': 'Warning',
           'message': 'You will be blocked if you continue using foul language.',
           'timestamp': FieldValue.serverTimestamp(),
           'status': 'unread',
           'sentBy': FirebaseAuth.instance.currentUser?.email ?? 'Super Admin',
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              "Warning notification sent.",
-              style: const TextStyle(
-                fontFamily: 'Poppins',
-                color: Colors.white,
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                "Warning notification sent.",
+                style: GoogleFonts.poppins(color: Colors.white),
+              ),
+              duration: const Duration(seconds: 3),
+              backgroundColor: primarycolor,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
               ),
             ),
-            duration: const Duration(seconds: 3),
-            backgroundColor: primarycolor,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
-          ),
-        );
+          );
+        }
       } else {
-        showCustomSnackBar(context, 'User not found in database.');
+        showCustomSnackBar(
+          context, 
+          'User not found in database.',
+          backgroundColor: Colors.red,
+        );
       }
     } catch (e) {
       print('Error sending warning notification: $e');
-      showCustomSnackBar(context, 'Failed to send warning notification.');
+      showCustomSnackBar(
+        context, 
+        'Failed to send warning notification.',
+        backgroundColor: Colors.red,
+      );
     }
   }
 
@@ -476,7 +1047,6 @@ class _UserinfoPageState extends State<UserinfoPage>
           setState(() {
             firstName = capitalizeEachWord(doc['firstName'] ?? '');
             lastName = capitalizeEachWord(doc['lastName'] ?? '');
-            // The following line fetches and updates the profilePictureUrl if it exists
             profilePictureUrl =
                 doc['profilePicture'] ?? "assets/images/defaultDP.jpg";
             _adminInfoLoaded = true;
@@ -499,6 +1069,7 @@ class _UserinfoPageState extends State<UserinfoPage>
           .collection('users')
           .orderBy('createdAt', descending: true)
           .get();
+
       final fetchedUsers = await Future.wait(
         snapshot.docs.map((doc) async {
           final data = doc.data();
@@ -510,14 +1081,48 @@ class _UserinfoPageState extends State<UserinfoPage>
             formattedDate = DateFormat('MMMM dd, yyyy').format(date);
           }
 
+          final encryptedEmail = data['email'] as String?;
+          String decryptedEmail = '';
+          
+          if (encryptedEmail != null && encryptedEmail.isNotEmpty) {
+            try {
+              if (encryptedEmail.contains('@')) {
+                decryptedEmail = encryptedEmail;
+                print('📧 Email already plain text: $decryptedEmail');
+              } else {
+                decryptedEmail = await _encryptionService.decryptValue(encryptedEmail);
+                print('🔓 Decrypted email for ${data['name']}: $decryptedEmail');
+              }
+            } catch (e) {
+              print('⚠️ Failed to decrypt email for ${doc.id}: $e');
+              decryptedEmail = '[Encrypted]'; 
+            }
+          }
+
+          final int foulCount = data['strikes'] ?? 0;
+          final bool isBlocked = data['blocked'] ?? false;
+          const int foulThreshold = 20;
+
+          if (foulCount >= foulThreshold && !isBlocked) {
+            await FirebaseFirestore.instance
+                .collection('users')
+                .doc(doc.id)
+                .update({
+              'blocked': true,
+              'blockedReason': 'Exceeded foul word limit',
+            });
+            print('User $decryptedEmail automatically blocked (strikes: $foulCount)');
+          }
+
           return {
             'name': capitalizeEachWord(data['name'] ?? ''),
-            'email': data['email'] ?? '',
+            'email': decryptedEmail,
+            'email_encrypted': encryptedEmail,
             'username': data['username'] ?? '',
             'position': data['studentType'] ?? 'Prospective',
             'date': formattedDate,
-            'foulWords': data['strikes'] ?? 0,
-            'blocked': data['blocked'] ?? false,
+            'foulWords': foulCount,
+            'blocked': foulCount >= foulThreshold || isBlocked,
             'phoneNumber': data['phoneNumber'] ?? null,
           };
         }).toList(),
@@ -528,6 +1133,7 @@ class _UserinfoPageState extends State<UserinfoPage>
         _userDataLoaded = true;
       });
     } catch (e) {
+      print('Error loading users: $e');
       setState(() => _userDataLoaded = true);
     }
   }
@@ -543,9 +1149,8 @@ class _UserinfoPageState extends State<UserinfoPage>
         children: [
           Text(
             label,
-            style: const TextStyle(
+            style: GoogleFonts.poppins(
               fontWeight: FontWeight.bold,
-              fontFamily: 'Poppins',
               color: dark,
             ),
           ),
@@ -554,7 +1159,7 @@ class _UserinfoPageState extends State<UserinfoPage>
               value?.toString() ?? 'N/A',
               textAlign: TextAlign.right,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontFamily: 'Poppins', color: textdark),
+              style: GoogleFonts.poppins(color: textdark),
             ),
           ),
         ],
@@ -595,20 +1200,18 @@ class _UserinfoPageState extends State<UserinfoPage>
               const SizedBox(height: 12),
               Text(
                 fullName,
-                style: const TextStyle(
+                style: GoogleFonts.poppins(
                   fontWeight: FontWeight.bold,
                   fontSize: 18,
-                  fontFamily: 'Poppins',
                   color: dark,
                 ),
               ),
               const SizedBox(height: 4),
               Text(
-                c['email'] ?? '',
-                style: const TextStyle(
+                _maskEmail(c['email'] ?? ''),
+                style: GoogleFonts.poppins(
                   fontSize: 13,
                   color: textdark,
-                  fontFamily: 'Poppins',
                 ),
               ),
               const Divider(height: 30),
@@ -642,7 +1245,6 @@ class _UserinfoPageState extends State<UserinfoPage>
   Widget build(BuildContext context) {
     final fullName = capitalizeEachWord('$firstName $lastName');
 
-    // Loader screen covers everything until _allDataLoaded
     if (!_allDataLoaded) {
       return Scaffold(
         backgroundColor: lightBackground,
@@ -656,9 +1258,13 @@ class _UserinfoPageState extends State<UserinfoPage>
       );
     }
 
+    final poppinsTextTheme = GoogleFonts.poppinsTextTheme(Theme.of(context).textTheme)
+        .apply(bodyColor: dark, displayColor: dark);
+
     return Theme(
       data: Theme.of(context).copyWith(
-        textTheme: Theme.of(context).textTheme.apply(fontFamily: 'Poppins'),
+        textTheme: poppinsTextTheme,
+        primaryTextTheme: poppinsTextTheme,
       ),
       child: Scaffold(
         drawer: NavigationDrawer(
@@ -671,15 +1277,14 @@ class _UserinfoPageState extends State<UserinfoPage>
           iconTheme: const IconThemeData(color: primarycolordark),
           elevation: 0,
           titleSpacing: 0,
-          title: const Row(
+          title: Row(
             children: [
-              SizedBox(width: 12),
+              const SizedBox(width: 12),
               Text(
                 "Users Info",
-                style: TextStyle(
+                style: GoogleFonts.poppins(
                   color: primarycolordark,
                   fontWeight: FontWeight.bold,
-                  fontFamily: 'Poppins',
                 ),
               ),
             ],
@@ -719,20 +1324,20 @@ class _UserinfoPageState extends State<UserinfoPage>
                     runSpacing: spacing,
                     children: [
                       StatCard(
-                        title: "Total User",
-                        value: totalusersCount.toString(),
-                        color: primarycolordark,
-                        width: cardWidth,
-                      ),
-                      StatCard(
                         title: "Registered Users",
                         value: users.length.toString(),
-                        color: primarycolor,
+                        color: primarycolordark,
                         width: cardWidth,
                       ),
                       StatCard(
                         title: "Guest Users",
                         value: guestUsers.length.toString(),
+                        color: primarycolor,
+                        width: cardWidth,
+                      ),
+                      StatCard(
+                        title: "Total User",
+                        value: totalusersCount.toString(),
                         color: primarycolordark,
                         width: cardWidth,
                       ),
@@ -778,20 +1383,19 @@ class _UserinfoPageState extends State<UserinfoPage>
                         vertical: 12,
                       ),
                       child: Row(
-                        children: const [
+                        children: [
                           Expanded(
                             flex: 2,
                             child: Padding(
-                              padding: EdgeInsets.only(left: 40),
+                              padding: const EdgeInsets.only(left: 40),
                               child: Align(
                                 alignment: Alignment.centerLeft,
                                 child: Text(
                                   'Name',
-                                  style: TextStyle(
+                                  style: GoogleFonts.poppins(
                                     fontWeight: FontWeight.bold,
                                     fontSize: 13,
                                     color: Colors.white,
-                                    fontFamily: 'Poppins',
                                   ),
                                 ),
                               ),
@@ -802,11 +1406,10 @@ class _UserinfoPageState extends State<UserinfoPage>
                             child: Center(
                               child: Text(
                                 'Email',
-                                style: TextStyle(
+                                style: GoogleFonts.poppins(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 13,
                                   color: Colors.white,
-                                  fontFamily: 'Poppins',
                                 ),
                               ),
                             ),
@@ -816,11 +1419,10 @@ class _UserinfoPageState extends State<UserinfoPage>
                             child: Center(
                               child: Text(
                                 'Status',
-                                style: TextStyle(
+                                style: GoogleFonts.poppins(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 13,
                                   color: Colors.white,
-                                  fontFamily: 'Poppins',
                                 ),
                               ),
                             ),
@@ -830,11 +1432,10 @@ class _UserinfoPageState extends State<UserinfoPage>
                             child: Center(
                               child: Text(
                                 'Joined',
-                                style: TextStyle(
+                                style: GoogleFonts.poppins(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 13,
                                   color: Colors.white,
-                                  fontFamily: 'Poppins',
                                 ),
                               ),
                             ),
@@ -844,11 +1445,10 @@ class _UserinfoPageState extends State<UserinfoPage>
                             child: Center(
                               child: Text(
                                 'Foul Words Count',
-                                style: TextStyle(
+                                style: GoogleFonts.poppins(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 13,
                                   color: Colors.white,
-                                  fontFamily: 'Poppins',
                                 ),
                               ),
                             ),
@@ -858,11 +1458,10 @@ class _UserinfoPageState extends State<UserinfoPage>
                             child: Center(
                               child: Text(
                                 'Action',
-                                style: TextStyle(
+                                style: GoogleFonts.poppins(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 13,
                                   color: Colors.white,
-                                  fontFamily: 'Poppins',
                                 ),
                               ),
                             ),
@@ -888,12 +1487,11 @@ class _UserinfoPageState extends State<UserinfoPage>
                             fit: BoxFit.contain,
                           ),
                           const SizedBox(height: 24),
-                          const Text(
+                          Text(
                             "No user to show.",
-                            style: TextStyle(
+                            style: GoogleFonts.poppins(
                               fontSize: 14,
                               color: Colors.grey,
-                              fontFamily: 'Poppins',
                             ),
                           ),
                         ],
@@ -935,8 +1533,8 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                       fullName.isNotEmpty
                                                           ? fullName[0]
                                                           : '?',
-                                                      style: const TextStyle(
-                                                        color: white,
+                                                      style: GoogleFonts.poppins(
+                                                        color: Colors.white,
                                                         fontWeight:
                                                             FontWeight.bold,
                                                       ),
@@ -957,12 +1555,10 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                                 overflow:
                                                                     TextOverflow
                                                                         .ellipsis,
-                                                                style: const TextStyle(
+                                                                style: GoogleFonts.poppins(
                                                                   fontWeight:
                                                                       FontWeight
                                                                           .bold,
-                                                                  fontFamily:
-                                                                      'Poppins',
                                                                   color: dark,
                                                                 ),
                                                               ),
@@ -975,13 +1571,10 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                           ),
                                                           overflow: TextOverflow
                                                               .ellipsis,
-                                                          style:
-                                                              const TextStyle(
-                                                                fontSize: 13,
-                                                                fontFamily:
-                                                                    'Poppins',
-                                                                color: textdark,
-                                                              ),
+                                                          style: GoogleFonts.poppins(
+                                                            fontSize: 13,
+                                                            color: textdark,
+                                                          ),
                                                         ),
                                                       ],
                                                     ),
@@ -991,19 +1584,17 @@ class _UserinfoPageState extends State<UserinfoPage>
                                               const SizedBox(height: 12),
                                               Text(
                                                 'Joined: $joinedDate',
-                                                style: const TextStyle(
+                                                style: GoogleFonts.poppins(
                                                   fontSize: 13,
                                                   color: textdark,
-                                                  fontFamily: 'Poppins',
                                                 ),
                                               ),
                                               const SizedBox(height: 4),
                                               Text(
                                                 'Foul Words: ${c['foulWords'] ?? 0}',
-                                                style: const TextStyle(
+                                                style: GoogleFonts.poppins(
                                                   fontSize: 13,
                                                   color: textdark,
-                                                  fontFamily: 'Poppins',
                                                 ),
                                               ),
                                               const SizedBox(height: 8),
@@ -1020,7 +1611,10 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                         Icons.visibility,
                                                         size: 16,
                                                       ),
-                                                      label: const Text('View'),
+                                                      label: Text(
+                                                        'View',
+                                                        style: GoogleFonts.poppins(),
+                                                      ),
                                                       style: ElevatedButton.styleFrom(
                                                         backgroundColor:
                                                             const Color(
@@ -1038,11 +1632,7 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                             const EdgeInsets.symmetric(
                                                               vertical: 14,
                                                             ),
-                                                        textStyle:
-                                                            const TextStyle(
-                                                              fontFamily:
-                                                                  'Poppins',
-                                                            ),
+                                                        textStyle: GoogleFonts.poppins(),
                                                       ),
                                                     ),
                                                   ),
@@ -1059,8 +1649,9 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                               Icons.lock_open,
                                                               size: 16,
                                                             ),
-                                                            label: const Text(
+                                                            label: Text(
                                                               'Recover',
+                                                              style: GoogleFonts.poppins(),
                                                             ),
                                                             style: ElevatedButton.styleFrom(
                                                               backgroundColor:
@@ -1078,11 +1669,7 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                                     vertical:
                                                                         14,
                                                                   ),
-                                                              textStyle:
-                                                                  const TextStyle(
-                                                                    fontFamily:
-                                                                        'Poppins',
-                                                                  ),
+                                                              textStyle: GoogleFonts.poppins(),
                                                             ),
                                                           )
                                                         : ElevatedButton.icon(
@@ -1095,8 +1682,9 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                                   .warning_amber,
                                                               size: 16,
                                                             ),
-                                                            label: const Text(
+                                                            label: Text(
                                                               'Warning',
+                                                              style: GoogleFonts.poppins(),
                                                             ),
                                                             style: ElevatedButton.styleFrom(
                                                               backgroundColor:
@@ -1116,11 +1704,7 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                                     vertical:
                                                                         14,
                                                                   ),
-                                                              textStyle:
-                                                                  const TextStyle(
-                                                                    fontFamily:
-                                                                        'Poppins',
-                                                                  ),
+                                                              textStyle: GoogleFonts.poppins(),
                                                             ),
                                                           ),
                                                   ),
@@ -1137,8 +1721,9 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                           Icons.block,
                                                           size: 16,
                                                         ),
-                                                        label: const Text(
+                                                        label: Text(
                                                           'Block',
+                                                          style: GoogleFonts.poppins(),
                                                         ),
                                                         style: ElevatedButton.styleFrom(
                                                           backgroundColor:
@@ -1157,11 +1742,7 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                               const EdgeInsets.symmetric(
                                                                 vertical: 14,
                                                               ),
-                                                          textStyle:
-                                                              const TextStyle(
-                                                                fontFamily:
-                                                                    'Poppins',
-                                                              ),
+                                                          textStyle: GoogleFonts.poppins(),
                                                         ),
                                                       ),
                                                     ),
@@ -1197,9 +1778,8 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                       fullName.isNotEmpty
                                                           ? fullName[0]
                                                           : '?',
-                                                      style: const TextStyle(
+                                                      style: GoogleFonts.poppins(
                                                         color: Colors.white,
-                                                        fontFamily: 'Poppins',
                                                       ),
                                                     ),
                                                   ),
@@ -1207,19 +1787,19 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                   Expanded(
                                                     child: Row(
                                                       children: [
-                                                        Text(
-                                                          fullName,
-                                                          overflow: TextOverflow
-                                                              .ellipsis,
-                                                          style:
-                                                              const TextStyle(
-                                                                color: dark,
-                                                                fontWeight:
-                                                                    FontWeight
-                                                                        .bold,
-                                                                fontFamily:
-                                                                    'Poppins',
-                                                              ),
+                                                        Expanded(
+                                                          child: Text(
+                                                            fullName,
+                                                            overflow: TextOverflow
+                                                                .ellipsis,
+                                                            maxLines: 1,
+                                                            style: GoogleFonts.poppins(
+                                                              color: dark,
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .bold,
+                                                            ),
+                                                          ),
                                                         ),
                                                       ],
                                                     ),
@@ -1234,8 +1814,7 @@ class _UserinfoPageState extends State<UserinfoPage>
                                               child: Text(
                                                 _maskEmail(c['email']),
                                                 overflow: TextOverflow.ellipsis,
-                                                style: const TextStyle(
-                                                  fontFamily: 'Poppins',
+                                                style: GoogleFonts.poppins(
                                                   color: textdark,
                                                 ),
                                               ),
@@ -1256,8 +1835,7 @@ class _UserinfoPageState extends State<UserinfoPage>
                                             child: Center(
                                               child: Text(
                                                 joinedDate,
-                                                style: const TextStyle(
-                                                  fontFamily: 'Poppins',
+                                                style: GoogleFonts.poppins(
                                                   color: dark,
                                                 ),
                                               ),
@@ -1268,8 +1846,7 @@ class _UserinfoPageState extends State<UserinfoPage>
                                             child: Center(
                                               child: Text(
                                                 '${c['foulWords'] ?? 0}',
-                                                style: const TextStyle(
-                                                  fontFamily: 'Poppins',
+                                                style: GoogleFonts.poppins(
                                                   color: textdark,
                                                 ),
                                               ),
@@ -1501,16 +2078,20 @@ class _UserinfoPageState extends State<UserinfoPage>
       ),
       child: Text(
         text,
-        style: const TextStyle(
+        style: GoogleFonts.poppins(
           color: Colors.white,
           fontSize: 12,
-          fontFamily: 'Poppins',
         ),
       ),
     );
   }
 
   String _maskEmail(String email) {
+    // Don't mask [Encrypted] text
+    if (email == '[Encrypted]') {
+      return email;
+    }
+    
     final parts = email.split('@');
     if (parts.length != 2) return email;
     final name = parts[0];
@@ -1577,20 +2158,18 @@ class _StatCardState extends State<StatCard> {
           children: [
             Text(
               widget.value,
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 fontSize: 24,
                 fontWeight: FontWeight.bold,
                 color: widget.color,
-                fontFamily: 'Poppins',
               ),
             ),
             const SizedBox(height: 4),
             Text(
               widget.title,
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 fontSize: 14,
                 color: widget.color.withOpacity(0.9),
-                fontFamily: 'Poppins',
               ),
             ),
           ],
@@ -1608,10 +2187,10 @@ class SearchBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return TextField(
       controller: controller,
-      style: const TextStyle(fontFamily: 'Poppins', color: dark),
+      style: GoogleFonts.poppins( color: dark),
       decoration: InputDecoration(
         hintText: 'Search user...',
-        hintStyle: const TextStyle(color: textdark),
+        hintStyle: GoogleFonts.poppins(color: textdark),
         prefixIcon: const Icon(Icons.search, color: primarycolor),
         filled: true,
         fillColor: Colors.white,
@@ -1656,7 +2235,7 @@ class FilterDropdown extends StatelessWidget {
           value: selectedFilter,
           onChanged: onChanged,
           dropdownColor: lightBackground,
-          style: const TextStyle(fontFamily: 'Poppins', color: dark),
+          style: GoogleFonts.poppins(color: dark),
           icon: const Icon(Icons.filter_list, color: primarycolordark),
           items: ['All', 'Prospective', 'Enrolled'].map((filter) {
             return DropdownMenuItem<String>(
@@ -1670,7 +2249,7 @@ class FilterDropdown extends StatelessWidget {
                   ),
                   child: Text(
                     filter,
-                    style: const TextStyle(fontFamily: 'Poppins', color: dark),
+                    style: GoogleFonts.poppins(color: dark),
                   ),
                 ),
               ),
@@ -1743,10 +2322,10 @@ class _HoverButtonState extends State<HoverButton> {
           duration: const Duration(milliseconds: 130),
           decoration: BoxDecoration(
             color: widget.isActive
-                ? primarycolor.withOpacity(0.25) // Active highlight
+                ? primarycolor.withOpacity(0.25)
                 : (isHovered
-                      ? primarycolor.withOpacity(0.10) // Hover highlight
-                      : Colors.transparent),
+                    ? primarycolor.withOpacity(0.10)
+                    : Colors.transparent),
             borderRadius: BorderRadius.circular(10),
           ),
           child: ListTile(
@@ -1758,12 +2337,11 @@ class _HoverButtonState extends State<HoverButton> {
             ),
             title: Text(
               widget.label ?? '',
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 color: widget.isActive
                     ? primarycolordark
                     : (widget.isLogout ? Colors.red : primarycolordark),
                 fontWeight: widget.isActive ? FontWeight.bold : FontWeight.w600,
-                fontFamily: 'Poppins',
               ),
             ),
             onTap: widget.onPressed,
@@ -1777,16 +2355,12 @@ class _HoverButtonState extends State<HoverButton> {
         cursor: SystemMouseCursors.click,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 130),
-          transform: isHovered
-              ? (Matrix4.identity()..scale(1.07))
-              : Matrix4.identity(),
+          transform:
+              isHovered ? (Matrix4.identity()..scale(1.07)) : Matrix4.identity(),
           child: TextButton(
             style: TextButton.styleFrom(
               foregroundColor: primarycolordark,
-              textStyle: const TextStyle(
-                fontFamily: 'Poppins',
-                fontWeight: FontWeight.w600,
-              ),
+              textStyle: GoogleFonts.poppins(fontWeight: FontWeight.w600),
             ),
             onPressed: widget.onPressed,
             child: widget.child ?? const SizedBox(),
@@ -1799,7 +2373,7 @@ class _HoverButtonState extends State<HoverButton> {
 
 class NavigationDrawer extends StatelessWidget {
   final String? applicationLogoUrl;
-  final String activePage; // holds current active page name
+  final String activePage;
 
   const NavigationDrawer({
     super.key,
@@ -1816,28 +2390,19 @@ class NavigationDrawer extends StatelessWidget {
           DrawerHeader(
             decoration: const BoxDecoration(color: lightBackground),
             child: Center(
-              child:
-                  applicationLogoUrl != null && applicationLogoUrl!.isNotEmpty
+              child: applicationLogoUrl != null && applicationLogoUrl!.isNotEmpty
                   ? Image.network(
                       applicationLogoUrl!,
                       height: double.infinity,
                       fit: BoxFit.contain,
-                      errorBuilder: (context, error, stackTrace) => Image.asset(
-                        'assets/images/dhvbot.png',
-                        height: double.infinity,
-                        fit: BoxFit.contain,
-                      ),
+                      errorBuilder: (context, error, stackTrace) =>
+                          Image.asset('assets/images/dhvbot.png'),
                     )
-                  : Image.asset(
-                      'assets/images/dhvbot.png',
-                      height: double.infinity,
-                      fit: BoxFit.contain,
-                    ),
+                  : Image.asset('assets/images/dhvbot.png'),
             ),
           ),
           _drawerItem(context, Icons.dashboard_outlined, "Dashboard", () {
-            Navigator.pop(context);
-            Navigator.push(
+            Navigator.pushReplacement(
               context,
               MaterialPageRoute(
                 builder: (_) => const SuperAdminDashboardPage(),
@@ -1845,59 +2410,74 @@ class NavigationDrawer extends StatelessWidget {
             );
           }),
           _drawerItem(context, Icons.people_outline, "Users Info", () {
-            Navigator.pop(context);
-            Navigator.push(
+            Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (_) => const UserinfoPage()),
             );
           }),
-          _drawerItem(context, Icons.chat_outlined, "Chat Logs", () {
-            Navigator.pop(context);
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const ChatsPage()),
-            );
-          }),
+          // _drawerItem(context, Icons.chat_outlined, "Chat Logs", () {
+          //   Navigator.pushReplacement(
+          //     context,
+          //     MaterialPageRoute(builder: (_) => const ChatsPage()),
+          //   );
+          // }),
           _drawerItem(context, Icons.feedback_outlined, "Feedbacks", () {
-            Navigator.pop(context);
-            Navigator.push(
+            Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (_) => const FeedbacksPage()),
             );
           }),
-          _drawerItem(
-            context,
-            Icons.admin_panel_settings_outlined,
-            "Admin Management",
-            () {
-              Navigator.pop(context);
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const AdminManagementPage()),
-              );
-            },
-          ),
-          _drawerItem(context, Icons.receipt_long_outlined, "Audit Logs", () {
-            Navigator.pop(context);
-            Navigator.push(
+          _drawerItem(context, Icons.admin_panel_settings_outlined,
+              "Admin Management", () {
+            Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (_) => const AuditLogsPage()),
+              MaterialPageRoute(builder: (_) => const AdminManagementPage()),
             );
           }),
+          // _drawerItem(context, Icons.warning_amber_rounded,
+          //     "Emergency Requests", () {
+          //   Navigator.pop(context);
+          //   Navigator.push(
+          //     context,
+          //     MaterialPageRoute(builder: (_) => const EmergencyRequestsPage()),
+          //   );
+          // }),
           _drawerItem(context, Icons.settings_outlined, "Settings", () {
-            Navigator.pop(context);
-            Navigator.push(
+            Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (_) => const SystemSettingsPage()),
             );
           }),
-          const Spacer(),
-          _drawerItem(context, Icons.logout, "Logout", () {
+          _drawerItem(context, Icons.receipt_long_outlined, "Audit Logs", () {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (_) => const AdminLoginPage()),
+              MaterialPageRoute(builder: (_) => const AuditLogsPage()),
             );
-          }, isLogout: true),
+          }),
+          const Spacer(),
+          _drawerItem(
+            context,
+            Icons.logout,
+            "Logout",
+            () async {
+              try {
+                await FirebaseAuth.instance.signOut();
+                Navigator.pushAndRemoveUntil(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AdminLoginPage()),
+                  (route) => false,
+                );
+              } catch (e) {
+                print("Logout error: $e");
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                      content:
+                          Text("Logout failed. Please try again.", style: GoogleFonts.poppins())),
+                );
+              }
+            },
+            isLogout: true,
+          ),
         ],
       ),
     );

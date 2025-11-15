@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'package:lottie/lottie.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:chatbot/admin/dashboard.dart';
 import 'package:chatbot/admin/feedbacks.dart';
 import 'package:chatbot/admin/chatbotdata.dart';
@@ -54,6 +55,10 @@ class _ProfileButtonState extends State<ProfileButton> {
 
   @override
   Widget build(BuildContext context) {
+    // Use MediaQuery to detect small screen
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isSmallScreen = screenWidth < 600;
+
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => isHovered = true),
@@ -67,42 +72,52 @@ class _ProfileButtonState extends State<ProfileButton> {
           margin: const EdgeInsets.only(right: 12),
           padding: const EdgeInsets.symmetric(horizontal: 14),
           decoration: BoxDecoration(
-            color: isHovered ? Colors.grey.withOpacity(0.15) : Colors.transparent,
+            color: isHovered
+                ? Colors.grey.withOpacity(0.15)
+                : Colors.transparent,
             borderRadius: BorderRadius.circular(15),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircleAvatar(
-                radius: 18,
-                backgroundImage: AssetImage(widget.imageUrl),
-                backgroundColor: Colors.grey[200],
-              ),
-              const SizedBox(width: 10),
-              Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.name,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: dark,
-                      fontFamily: 'Poppins',
+          child: isSmallScreen
+              ? CircleAvatar(
+                  radius: 18,
+                  backgroundImage: widget.imageUrl.startsWith('http')
+                      ? NetworkImage(widget.imageUrl)
+                      : AssetImage(widget.imageUrl) as ImageProvider,
+                  backgroundColor: Colors.grey[200],
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircleAvatar(
+                      radius: 18,
+                      backgroundImage: widget.imageUrl.startsWith('http')
+                          ? NetworkImage(widget.imageUrl)
+                          : AssetImage(widget.imageUrl) as ImageProvider,
+                      backgroundColor: Colors.grey[200],
                     ),
-                  ),
-                  Text(
-                    widget.role,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: dark,
-                      fontFamily: 'Poppins',
+                    const SizedBox(width: 10),
+                    Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.name,
+                          style: GoogleFonts.poppins(
+                            fontWeight: FontWeight.bold,
+                            color: dark,
+                          ),
+                        ),
+                        Text(
+                          widget.role,
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            color: dark,
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
-            ],
-          ),
+                  ],
+                ),
         ),
       ),
     );
@@ -122,6 +137,7 @@ class _UserinfoPageState extends State<UserinfoPage>
   String _selectedFilter = 'All';
   String firstName = "";
   String lastName = "";
+  String? adminDepartment;
   bool _adminInfoLoaded = false;
   bool _userDataLoaded = false;
 
@@ -198,8 +214,7 @@ class _UserinfoPageState extends State<UserinfoPage>
       SnackBar(
         content: Text(
           message,
-          style: const TextStyle(
-            fontFamily: 'Poppins',
+          style: GoogleFonts.poppins(
             fontWeight: FontWeight.w500,
             color: Colors.white,
           ),
@@ -261,26 +276,25 @@ class _UserinfoPageState extends State<UserinfoPage>
       builder: (_) => AlertDialog(
         backgroundColor: lightBackground,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        title: const Text(
+        title: Text(
           'Block User?',
-          style: TextStyle(
+          style: GoogleFonts.poppins(
             color: primarycolordark,
             fontWeight: FontWeight.bold,
-            fontFamily: 'Poppins',
           ),
         ),
         content: Text(
           'Are you sure you want to block ${user['name']}? This will restrict their access due to violations.',
-          style: const TextStyle(color: dark, fontFamily: 'Poppins'),
+          style: GoogleFonts.poppins(color: dark),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
             style: TextButton.styleFrom(
               foregroundColor: primarycolordark,
-              textStyle: const TextStyle(fontFamily: 'Poppins'),
+              textStyle: GoogleFonts.poppins(),
             ),
-            child: const Text('Cancel'),
+            child: Text('Cancel', style: GoogleFonts.poppins()),
           ),
           TextButton(
             onPressed: () {
@@ -290,12 +304,9 @@ class _UserinfoPageState extends State<UserinfoPage>
             style: TextButton.styleFrom(
               backgroundColor: Colors.red,
               foregroundColor: Colors.white,
-              textStyle: const TextStyle(
-                fontWeight: FontWeight.bold,
-                fontFamily: 'Poppins',
-              ),
+              textStyle: GoogleFonts.poppins(fontWeight: FontWeight.bold),
             ),
-            child: const Text('Confirm Block'),
+            child: Text('Confirm Block', style: GoogleFonts.poppins(color: Colors.white)),
           ),
         ],
       ),
@@ -350,26 +361,22 @@ class _UserinfoPageState extends State<UserinfoPage>
       builder: (_) => AlertDialog(
         backgroundColor: lightBackground,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        title: const Text(
+        title: Text(
           'Recover User Account?',
-          style: TextStyle(
-            color: primarycolordark,
-            fontWeight: FontWeight.bold,
-            fontFamily: 'Poppins',
-          ),
+          style: GoogleFonts.poppins(color: primarycolordark, fontWeight: FontWeight.bold),
         ),
         content: Text(
           'Are you sure you want to recover the account for ${user['name']}? Access will be restored.',
-          style: const TextStyle(color: dark, fontFamily: 'Poppins'),
+          style: GoogleFonts.poppins(color: dark),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
             style: TextButton.styleFrom(
               foregroundColor: primarycolordark,
-              textStyle: const TextStyle(fontFamily: 'Poppins'),
+              textStyle: GoogleFonts.poppins(),
             ),
-            child: const Text('Cancel'),
+            child: Text('Cancel', style: GoogleFonts.poppins()),
           ),
           TextButton(
             onPressed: () {
@@ -379,12 +386,9 @@ class _UserinfoPageState extends State<UserinfoPage>
             style: TextButton.styleFrom(
               backgroundColor: Colors.green,
               foregroundColor: Colors.white,
-              textStyle: const TextStyle(
-                fontWeight: FontWeight.bold,
-                fontFamily: 'Poppins',
-              ),
+              textStyle: GoogleFonts.poppins(fontWeight: FontWeight.bold),
             ),
-            child: const Text('Confirm Recover'),
+            child: Text('Confirm Recover', style: GoogleFonts.poppins(color: Colors.white)),
           ),
         ],
       ),
@@ -416,10 +420,7 @@ class _UserinfoPageState extends State<UserinfoPage>
           SnackBar(
             content: Text(
               "Warning notification sent.",
-              style: const TextStyle(
-                fontFamily: 'Poppins',
-                color: Colors.white,
-              ),
+              style: GoogleFonts.poppins(color: Colors.white),
             ),
             duration: const Duration(seconds: 3),
             backgroundColor: primarycolor,
@@ -446,10 +447,13 @@ class _UserinfoPageState extends State<UserinfoPage>
             .collection('Admin')
             .doc(user.uid)
             .get();
-        if (doc.exists) {
+
+        if (doc.exists && doc.data() != null) {
+          final data = doc.data() as Map<String, dynamic>;
           setState(() {
-            firstName = capitalizeEachWord(doc['firstName'] ?? '');
-            lastName = capitalizeEachWord(doc['lastName'] ?? '');
+            firstName = capitalizeEachWord(data['firstName'] ?? '');
+            lastName = capitalizeEachWord(data['lastName'] ?? '');
+            adminDepartment = capitalizeEachWord(data['department'] ?? 'No Department');
             _adminInfoLoaded = true;
           });
         } else {
@@ -518,18 +522,14 @@ class _UserinfoPageState extends State<UserinfoPage>
         children: [
           Text(
             label,
-            style: const TextStyle(
-              fontWeight: FontWeight.bold,
-              fontFamily: 'Poppins',
-              color: dark,
-            ),
+            style: GoogleFonts.poppins(fontWeight: FontWeight.bold, color: dark),
           ),
           Flexible(
             child: Text(
               value?.toString() ?? 'N/A',
               textAlign: TextAlign.right,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontFamily: 'Poppins', color: textdark),
+              style: GoogleFonts.poppins(color: textdark),
             ),
           ),
         ],
@@ -570,27 +570,18 @@ class _UserinfoPageState extends State<UserinfoPage>
               const SizedBox(height: 12),
               Text(
                 fullName,
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 18,
-                  fontFamily: 'Poppins',
-                  color: dark,
-                ),
+                style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 18, color: dark),
               ),
               const SizedBox(height: 4),
               Text(
                 c['email'] ?? '',
-                style: const TextStyle(
-                  fontSize: 13,
-                  color: textdark,
-                  fontFamily: 'Poppins',
-                ),
+                style: GoogleFonts.poppins(fontSize: 13, color: textdark),
               ),
               const Divider(height: 30),
               _buildProfileRow("First Name", firstName),
               _buildProfileRow("Last Name", lastName),
               _buildProfileRow("Username", c['username']),
-              _buildProfileRow("Phone Number", phoneNumber), // <- Add phone number row
+              _buildProfileRow("Phone Number", phoneNumber),
               _buildProfileRow("Date Created", c['date']),
               _buildProfileRow("Foul Words Count", c['foulWords']),
             ],
@@ -631,14 +622,16 @@ class _UserinfoPageState extends State<UserinfoPage>
       );
     }
 
+    // Apply Poppins globally for this page so web & mobile render consistently
+    final poppinsTextTheme = GoogleFonts.poppinsTextTheme(Theme.of(context).textTheme)
+        .apply(bodyColor: dark, displayColor: dark);
+
     return Theme(
-      data: Theme.of(context).copyWith(
-        textTheme: Theme.of(context).textTheme.apply(fontFamily: 'Poppins'),
-      ),
+      data: Theme.of(context).copyWith(textTheme: poppinsTextTheme, primaryTextTheme: poppinsTextTheme),
       child: Scaffold(
        drawer: NavigationDrawer(
         applicationLogoUrl: _applicationLogoUrl,
-        activePage: "User Info",
+        activePage: "Users Info",
       ),
         backgroundColor: lightBackground,
         appBar: AppBar(
@@ -646,15 +639,15 @@ class _UserinfoPageState extends State<UserinfoPage>
           iconTheme: const IconThemeData(color: primarycolordark),
           elevation: 0,
           titleSpacing: 0,
-          title: const Row(
+          title: Row(
             children: [
-              SizedBox(width: 12),
-              Text(
-                "User Info",
-                style: TextStyle(
-                  color: primarycolordark,
-                  fontWeight: FontWeight.bold,
-                  fontFamily: 'Poppins',
+              const SizedBox(width: 12),
+              Flexible(
+                child: Text(
+                  "Users Info",
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.poppins(color: primarycolordark, fontWeight: FontWeight.bold),
                 ),
               ),
             ],
@@ -665,7 +658,7 @@ class _UserinfoPageState extends State<UserinfoPage>
               child: ProfileButton(
                 imageUrl: "assets/images/defaultDP.jpg",
                 name: fullName.trim().isNotEmpty ? fullName : "Loading...",
-                role: "Admin",
+                role: "Admin - ${adminDepartment ?? 'No Department'}",
                 onTap: () {
                   Navigator.push(
                     context,
@@ -753,20 +746,19 @@ class _UserinfoPageState extends State<UserinfoPage>
                         vertical: 12,
                       ),
                       child: Row(
-                        children: const [
+                        children: [
                           Expanded(
                             flex: 2,
                             child: Padding(
-                              padding: EdgeInsets.only(left: 40),
+                              padding: const EdgeInsets.only(left: 40),
                               child: Align(
                                 alignment: Alignment.centerLeft,
                                 child: Text(
                                   'Name',
-                                  style: TextStyle(
+                                  style: GoogleFonts.poppins(
                                     fontWeight: FontWeight.bold,
                                     fontSize: 13,
                                     color: Colors.white,
-                                    fontFamily: 'Poppins',
                                   ),
                                 ),
                               ),
@@ -777,11 +769,10 @@ class _UserinfoPageState extends State<UserinfoPage>
                             child: Center(
                               child: Text(
                                 'Email',
-                                style: TextStyle(
+                                style: GoogleFonts.poppins(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 13,
                                   color: Colors.white,
-                                  fontFamily: 'Poppins',
                                 ),
                               ),
                             ),
@@ -791,11 +782,10 @@ class _UserinfoPageState extends State<UserinfoPage>
                             child: Center(
                               child: Text(
                                 'Status',
-                                style: TextStyle(
+                                style: GoogleFonts.poppins(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 13,
                                   color: Colors.white,
-                                  fontFamily: 'Poppins',
                                 ),
                               ),
                             ),
@@ -805,11 +795,10 @@ class _UserinfoPageState extends State<UserinfoPage>
                             child: Center(
                               child: Text(
                                 'Joined',
-                                style: TextStyle(
+                                style: GoogleFonts.poppins(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 13,
                                   color: Colors.white,
-                                  fontFamily: 'Poppins',
                                 ),
                               ),
                             ),
@@ -819,11 +808,10 @@ class _UserinfoPageState extends State<UserinfoPage>
                             child: Center(
                               child: Text(
                                 'Foul Words Count',
-                                style: TextStyle(
+                                style: GoogleFonts.poppins(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 13,
                                   color: Colors.white,
-                                  fontFamily: 'Poppins',
                                 ),
                               ),
                             ),
@@ -833,11 +821,10 @@ class _UserinfoPageState extends State<UserinfoPage>
                             child: Center(
                               child: Text(
                                 'Action',
-                                style: TextStyle(
+                                style: GoogleFonts.poppins(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 13,
                                   color: Colors.white,
-                                  fontFamily: 'Poppins',
                                 ),
                               ),
                             ),
@@ -863,12 +850,11 @@ class _UserinfoPageState extends State<UserinfoPage>
                             fit: BoxFit.contain,
                           ),
                           const SizedBox(height: 24),
-                          const Text(
+                          Text(
                             "No user to show.",
-                            style: TextStyle(
+                            style: GoogleFonts.poppins(
                               fontSize: 14,
                               color: Colors.grey,
-                              fontFamily: 'Poppins',
                             ),
                           ),
                         ],
@@ -904,14 +890,16 @@ class _UserinfoPageState extends State<UserinfoPage>
                                               Row(
                                                 children: [
                                                   CircleAvatar(
-                                                    backgroundColor: secondarycolor,
+                                                    backgroundColor:
+                                                        secondarycolor,
                                                     child: Text(
                                                       fullName.isNotEmpty
                                                           ? fullName[0]
                                                           : '?',
-                                                      style: const TextStyle(
-                                                        color: white,
-                                                        fontWeight: FontWeight.bold,
+                                                      style: GoogleFonts.poppins(
+                                                        color: Colors.white,
+                                                        fontWeight:
+                                                            FontWeight.bold,
                                                       ),
                                                     ),
                                                   ),
@@ -919,35 +907,35 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                   Expanded(
                                                     child: Column(
                                                       crossAxisAlignment:
-                                                          CrossAxisAlignment.start,
+                                                          CrossAxisAlignment
+                                                              .start,
                                                       children: [
                                                         Row(
                                                           children: [
                                                             Expanded(
                                                               child: Text(
                                                                 fullName,
-                                                                overflow: TextOverflow
-                                                                    .ellipsis,
-                                                                style:
-                                                                    const TextStyle(
-                                                                      fontWeight:
-                                                                          FontWeight
-                                                                              .bold,
-                                                                      fontFamily:
-                                                                          'Poppins',
-                                                                      color: dark,
-                                                                    ),
+                                                                overflow:
+                                                                    TextOverflow
+                                                                        .ellipsis,
+                                                                style: GoogleFonts.poppins(
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .bold,
+                                                                  color: dark,
+                                                                ),
                                                               ),
                                                             ),
                                                           ],
                                                         ),
                                                         Text(
-                                                          _maskEmail(c['email']),
-                                                          overflow:
-                                                              TextOverflow.ellipsis,
-                                                          style: const TextStyle(
+                                                          _maskEmail(
+                                                            c['email'],
+                                                          ),
+                                                          overflow: TextOverflow
+                                                              .ellipsis,
+                                                          style: GoogleFonts.poppins(
                                                             fontSize: 13,
-                                                            fontFamily: 'Poppins',
                                                             color: textdark,
                                                           ),
                                                         ),
@@ -959,19 +947,17 @@ class _UserinfoPageState extends State<UserinfoPage>
                                               const SizedBox(height: 12),
                                               Text(
                                                 'Joined: $joinedDate',
-                                                style: const TextStyle(
+                                                style: GoogleFonts.poppins(
                                                   fontSize: 13,
                                                   color: textdark,
-                                                  fontFamily: 'Poppins',
                                                 ),
                                               ),
                                               const SizedBox(height: 4),
                                               Text(
                                                 'Foul Words: ${c['foulWords'] ?? 0}',
-                                                style: const TextStyle(
+                                                style: GoogleFonts.poppins(
                                                   fontSize: 13,
                                                   color: textdark,
-                                                  fontFamily: 'Poppins',
                                                 ),
                                               ),
                                               const SizedBox(height: 8),
@@ -988,12 +974,17 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                         Icons.visibility,
                                                         size: 16,
                                                       ),
-                                                      label: const Text('View'),
+                                                      label: Text(
+                                                        'View',
+                                                        style: GoogleFonts.poppins(),
+                                                      ),
                                                       style: ElevatedButton.styleFrom(
-                                                        backgroundColor: const Color(
-                                                          0xFFD88C1B,
-                                                        ),
-                                                        foregroundColor: Colors.white,
+                                                        backgroundColor:
+                                                            const Color(
+                                                              0xFFD88C1B,
+                                                            ),
+                                                        foregroundColor:
+                                                            Colors.white,
                                                         shape: RoundedRectangleBorder(
                                                           borderRadius:
                                                               BorderRadius.circular(
@@ -1004,9 +995,7 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                             const EdgeInsets.symmetric(
                                                               vertical: 14,
                                                             ),
-                                                        textStyle: const TextStyle(
-                                                          fontFamily: 'Poppins',
-                                                        ),
+                                                        textStyle: GoogleFonts.poppins(),
                                                       ),
                                                     ),
                                                   ),
@@ -1023,8 +1012,9 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                               Icons.lock_open,
                                                               size: 16,
                                                             ),
-                                                            label: const Text(
+                                                            label: Text(
                                                               'Recover',
+                                                              style: GoogleFonts.poppins(),
                                                             ),
                                                             style: ElevatedButton.styleFrom(
                                                               backgroundColor:
@@ -1039,13 +1029,10 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                               ),
                                                               padding:
                                                                   const EdgeInsets.symmetric(
-                                                                    vertical: 14,
+                                                                    vertical:
+                                                                        14,
                                                                   ),
-                                                              textStyle:
-                                                                  const TextStyle(
-                                                                    fontFamily:
-                                                                        'Poppins',
-                                                                  ),
+                                                              textStyle: GoogleFonts.poppins(),
                                                             ),
                                                           )
                                                         : ElevatedButton.icon(
@@ -1054,16 +1041,19 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                                   c,
                                                                 ),
                                                             icon: const Icon(
-                                                              Icons.warning_amber,
+                                                              Icons
+                                                                  .warning_amber,
                                                               size: 16,
                                                             ),
-                                                            label: const Text(
+                                                            label: Text(
                                                               'Warning',
+                                                              style: GoogleFonts.poppins(),
                                                             ),
                                                             style: ElevatedButton.styleFrom(
-                                                              backgroundColor: Colors
-                                                                  .orange
-                                                                  .shade700,
+                                                              backgroundColor:
+                                                                  Colors
+                                                                      .orange
+                                                                      .shade700,
                                                               foregroundColor:
                                                                   Colors.white,
                                                               shape: RoundedRectangleBorder(
@@ -1074,13 +1064,10 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                               ),
                                                               padding:
                                                                   const EdgeInsets.symmetric(
-                                                                    vertical: 14,
+                                                                    vertical:
+                                                                        14,
                                                                   ),
-                                                              textStyle:
-                                                                  const TextStyle(
-                                                                    fontFamily:
-                                                                        'Poppins',
-                                                                  ),
+                                                              textStyle: GoogleFonts.poppins(),
                                                             ),
                                                           ),
                                                   ),
@@ -1097,10 +1084,15 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                           Icons.block,
                                                           size: 16,
                                                         ),
-                                                        label: const Text('Block'),
+                                                        label: Text(
+                                                          'Block',
+                                                          style: GoogleFonts.poppins(),
+                                                        ),
                                                         style: ElevatedButton.styleFrom(
                                                           backgroundColor:
-                                                              const Color(0xFF6C3C00),
+                                                              const Color(
+                                                                0xFF6C3C00,
+                                                              ),
                                                           foregroundColor:
                                                               Colors.white,
                                                           shape: RoundedRectangleBorder(
@@ -1113,9 +1105,7 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                               const EdgeInsets.symmetric(
                                                                 vertical: 14,
                                                               ),
-                                                          textStyle: const TextStyle(
-                                                            fontFamily: 'Poppins',
-                                                          ),
+                                                          textStyle: GoogleFonts.poppins(),
                                                         ),
                                                       ),
                                                     ),
@@ -1145,14 +1135,14 @@ class _UserinfoPageState extends State<UserinfoPage>
                                               child: Row(
                                                 children: [
                                                   CircleAvatar(
-                                                    backgroundColor: secondarycolor,
+                                                    backgroundColor:
+                                                        secondarycolor,
                                                     child: Text(
                                                       fullName.isNotEmpty
                                                           ? fullName[0]
                                                           : '?',
-                                                      style: const TextStyle(
+                                                      style: GoogleFonts.poppins(
                                                         color: Colors.white,
-                                                        fontFamily: 'Poppins',
                                                       ),
                                                     ),
                                                   ),
@@ -1160,15 +1150,19 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                   Expanded(
                                                     child: Row(
                                                       children: [
-                                                        Text(
-                                                          fullName,
-                                                          overflow:
-                                                              TextOverflow.ellipsis,
-                                                          style: const TextStyle(
-                                                            color: dark,
-                                                            fontWeight:
-                                                                FontWeight.bold,
-                                                            fontFamily: 'Poppins',
+                                                        // Ensure long names are truncated with ellipsis
+                                                        Expanded(
+                                                          child: Text(
+                                                            fullName,
+                                                            overflow: TextOverflow
+                                                                .ellipsis,
+                                                            maxLines: 1,
+                                                            style: GoogleFonts.poppins(
+                                                              color: dark,
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .bold,
+                                                            ),
                                                           ),
                                                         ),
                                                       ],
@@ -1184,8 +1178,7 @@ class _UserinfoPageState extends State<UserinfoPage>
                                               child: Text(
                                                 _maskEmail(c['email']),
                                                 overflow: TextOverflow.ellipsis,
-                                                style: const TextStyle(
-                                                  fontFamily: 'Poppins',
+                                                style: GoogleFonts.poppins(
                                                   color: textdark,
                                                 ),
                                               ),
@@ -1206,8 +1199,7 @@ class _UserinfoPageState extends State<UserinfoPage>
                                             child: Center(
                                               child: Text(
                                                 joinedDate,
-                                                style: const TextStyle(
-                                                  fontFamily: 'Poppins',
+                                                style: GoogleFonts.poppins(
                                                   color: dark,
                                                 ),
                                               ),
@@ -1218,8 +1210,7 @@ class _UserinfoPageState extends State<UserinfoPage>
                                             child: Center(
                                               child: Text(
                                                 '${c['foulWords'] ?? 0}',
-                                                style: const TextStyle(
-                                                  fontFamily: 'Poppins',
+                                                style: GoogleFonts.poppins(
                                                   color: textdark,
                                                 ),
                                               ),
@@ -1228,22 +1219,26 @@ class _UserinfoPageState extends State<UserinfoPage>
                                           Expanded(
                                             flex: 2,
                                             child: Padding(
-                                              padding: const EdgeInsets.symmetric(
-                                                horizontal: 8,
-                                              ),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 8,
+                                                  ),
                                               child: Row(
                                                 mainAxisAlignment:
                                                     MainAxisAlignment.center,
                                                 children: [
                                                   Tooltip(
-                                                    message: 'View User Details',
+                                                    message:
+                                                        'View User Details',
                                                     child: Container(
                                                       decoration: BoxDecoration(
                                                         color: const Color(
                                                           0xFFD88C1B,
                                                         ),
                                                         borderRadius:
-                                                            BorderRadius.circular(8),
+                                                            BorderRadius.circular(
+                                                              8,
+                                                            ),
                                                       ),
                                                       child: SizedBox(
                                                         width: 35,
@@ -1254,7 +1249,8 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                             size: 20,
                                                           ),
                                                           color: Colors.white,
-                                                          padding: EdgeInsets.zero,
+                                                          padding:
+                                                              EdgeInsets.zero,
                                                           constraints:
                                                               const BoxConstraints.tightFor(
                                                                 width: 40,
@@ -1272,30 +1268,37 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                   const SizedBox(width: 8),
                                                   isBlocked
                                                       ? Tooltip(
-                                                          message: 'Recover Account',
+                                                          message:
+                                                              'Recover Account',
                                                           child: Container(
-                                                            decoration: BoxDecoration(
-                                                              color: Colors.green,
-                                                              borderRadius:
-                                                                  BorderRadius.circular(
-                                                                    8,
-                                                                  ),
-                                                            ),
+                                                            decoration:
+                                                                BoxDecoration(
+                                                                  color: Colors
+                                                                      .green,
+                                                                  borderRadius:
+                                                                      BorderRadius.circular(
+                                                                        8,
+                                                                      ),
+                                                                ),
                                                             child: SizedBox(
                                                               width: 35,
                                                               height: 35,
                                                               child: IconButton(
                                                                 icon: const Icon(
-                                                                  Icons.lock_open,
+                                                                  Icons
+                                                                      .lock_open,
                                                                   size: 20,
                                                                 ),
-                                                                color: Colors.white,
+                                                                color: Colors
+                                                                    .white,
                                                                 padding:
-                                                                    EdgeInsets.zero,
+                                                                    EdgeInsets
+                                                                        .zero,
                                                                 constraints:
                                                                     const BoxConstraints.tightFor(
                                                                       width: 40,
-                                                                      height: 40,
+                                                                      height:
+                                                                          40,
                                                                     ),
                                                                 onPressed: () =>
                                                                     _showRecoverConfirmation(
@@ -1309,7 +1312,8 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                       : Row(
                                                           children: [
                                                             Tooltip(
-                                                              message: 'Send Warning',
+                                                              message:
+                                                                  'Send Warning',
                                                               child: Container(
                                                                 decoration: BoxDecoration(
                                                                   color: Colors
@@ -1329,15 +1333,17 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                                           .warning_amber,
                                                                       size: 20,
                                                                     ),
-                                                                    color:
-                                                                        Colors.white,
+                                                                    color: Colors
+                                                                        .white,
                                                                     padding:
                                                                         EdgeInsets
                                                                             .zero,
                                                                     constraints:
                                                                         const BoxConstraints.tightFor(
-                                                                          width: 40,
-                                                                          height: 40,
+                                                                          width:
+                                                                              40,
+                                                                          height:
+                                                                              40,
                                                                         ),
                                                                     onPressed: () =>
                                                                         _sendWarningNotification(
@@ -1347,9 +1353,12 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                                 ),
                                                               ),
                                                             ),
-                                                            const SizedBox(width: 8),
+                                                            const SizedBox(
+                                                              width: 8,
+                                                            ),
                                                             Tooltip(
-                                                              message: 'Block User',
+                                                              message:
+                                                                  'Block User',
                                                               child: Container(
                                                                 decoration: BoxDecoration(
                                                                   color: const Color(
@@ -1365,18 +1374,21 @@ class _UserinfoPageState extends State<UserinfoPage>
                                                                   height: 35,
                                                                   child: IconButton(
                                                                     icon: const Icon(
-                                                                      Icons.block,
+                                                                      Icons
+                                                                          .block,
                                                                       size: 20,
                                                                     ),
-                                                                    color:
-                                                                        Colors.white,
+                                                                    color: Colors
+                                                                        .white,
                                                                     padding:
                                                                         EdgeInsets
                                                                             .zero,
                                                                     constraints:
                                                                         const BoxConstraints.tightFor(
-                                                                          width: 40,
-                                                                          height: 40,
+                                                                          width:
+                                                                              40,
+                                                                          height:
+                                                                              40,
                                                                         ),
                                                                     onPressed: () =>
                                                                         _showBlockConfirmation(
@@ -1430,10 +1442,9 @@ class _UserinfoPageState extends State<UserinfoPage>
       ),
       child: Text(
         text,
-        style: const TextStyle(
+        style: GoogleFonts.poppins(
           color: Colors.white,
           fontSize: 12,
-          fontFamily: 'Poppins',
         ),
       ),
     );
@@ -1506,21 +1517,12 @@ class _StatCardState extends State<StatCard> {
           children: [
             Text(
               widget.value,
-              style: TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-                color: widget.color,
-                fontFamily: 'Poppins',
-              ),
+              style: GoogleFonts.poppins(fontSize: 24, fontWeight: FontWeight.bold, color: widget.color),
             ),
             const SizedBox(height: 4),
             Text(
               widget.title,
-              style: TextStyle(
-                fontSize: 14,
-                color: widget.color.withOpacity(0.9),
-                fontFamily: 'Poppins',
-              ),
+              style: GoogleFonts.poppins(fontSize: 14, color: widget.color.withOpacity(0.9)),
             ),
           ],
         ),
@@ -1537,10 +1539,10 @@ class SearchBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return TextField(
       controller: controller,
-      style: const TextStyle(fontFamily: 'Poppins', color: dark),
+      style: GoogleFonts.poppins(color: dark),
       decoration: InputDecoration(
         hintText: 'Search user...',
-        hintStyle: const TextStyle(color: textdark),
+        hintStyle: GoogleFonts.poppins(color: textdark),
         prefixIcon: const Icon(Icons.search, color: primarycolor),
         filled: true,
         fillColor: Colors.white,
@@ -1585,7 +1587,7 @@ class FilterDropdown extends StatelessWidget {
           value: selectedFilter,
           onChanged: onChanged,
           dropdownColor: lightBackground,
-          style: const TextStyle(fontFamily: 'Poppins', color: dark),
+          style: GoogleFonts.poppins(color: dark),
           icon: const Icon(Icons.filter_list, color: primarycolordark),
           items: ['All', 'Prospective', 'Enrolled'].map((filter) {
             return DropdownMenuItem<String>(
@@ -1599,10 +1601,7 @@ class FilterDropdown extends StatelessWidget {
                   ),
                   child: Text(
                     filter,
-                    style: const TextStyle(
-                      fontFamily: 'Poppins',
-                      color: dark,
-                    ),
+                    style: GoogleFonts.poppins(color: dark),
                   ),
                 ),
               ),
@@ -1672,10 +1671,7 @@ class _HoverButtonState extends State<HoverButton> {
           style: TextButton.styleFrom(
             backgroundColor: Colors.transparent,
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-            textStyle: const TextStyle(
-              fontFamily: 'Poppins',
-              fontWeight: FontWeight.bold,
-            ),
+            textStyle: GoogleFonts.poppins(fontWeight: FontWeight.bold),
             foregroundColor: primarycolordark,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(8),
@@ -1770,14 +1766,34 @@ class NavigationDrawer extends StatelessWidget {
           },
           isActive: activePage == "Chatbot Files",),
           const Spacer(),
-          _drawerItem(context, Icons.logout, "Logout", () {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (_) => const AdminLoginPage()),
-            );
-          },
-          isLogout: true,
-          isActive: false
+          _drawerItem(
+            context,
+            Icons.logout,
+            "Logout",
+            () async {
+              try {
+                // Sign out the user
+                await FirebaseAuth.instance.signOut();
+
+                // Optional: Clear local storage if you used SharedPreferences
+                // final prefs = await SharedPreferences.getInstance();
+                // await prefs.clear();
+
+                // Replace the entire route stack with the login page
+                Navigator.pushAndRemoveUntil(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AdminLoginPage()),
+                  (route) => false,
+                );
+              } catch (e) {
+                print("Logout error: $e");
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text("Logout failed. Please try again.", style: GoogleFonts.poppins())),
+                );
+              }
+            },
+            isLogout: true,
+            isActive: false,
           ),
         ],
       ),
@@ -1849,10 +1865,9 @@ class _DrawerHoverButtonState extends State<_DrawerHoverButton> {
           ),
           title: Text(
             widget.title,
-            style: TextStyle(
+            style: GoogleFonts.poppins(
               color: (widget.isLogout ? Colors.red : primarycolordark),
               fontWeight: FontWeight.w600,
-              fontFamily: 'Poppins',
             ),
           ),
           onTap: widget.onTap,

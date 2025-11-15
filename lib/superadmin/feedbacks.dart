@@ -12,6 +12,8 @@ import 'package:chatbot/superadmin/chatlogs.dart';
 import 'package:chatbot/superadmin/settings.dart';
 import 'package:chatbot/superadmin/userinfo.dart';
 import 'package:chatbot/superadmin/profile.dart';
+import 'package:chatbot/superadmin/emergencypage.dart';
+import 'package:chatbot/services/encryption_service.dart'; 
 
 const primarycolor = Color(0xFFffc803);
 const primarycolordark = Color(0xFF550100);
@@ -55,6 +57,9 @@ class _ProfileButtonState extends State<ProfileButton> {
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isSmallScreen = screenWidth < 600;
+
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => isHovered = true),
@@ -73,41 +78,47 @@ class _ProfileButtonState extends State<ProfileButton> {
                 : Colors.transparent,
             borderRadius: BorderRadius.circular(15),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircleAvatar(
-                radius: 18,
-                backgroundImage: widget.imageUrl.startsWith('http')
-                    ? NetworkImage(widget.imageUrl)
-                    : AssetImage(widget.imageUrl) as ImageProvider,
-                backgroundColor: Colors.grey[200],
-              ),
-              const SizedBox(width: 10),
-              Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.name,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: dark,
-                      fontFamily: 'Poppins',
+          child: isSmallScreen
+              ? CircleAvatar(
+                  radius: 18,
+                  backgroundImage: widget.imageUrl.startsWith('http')
+                      ? NetworkImage(widget.imageUrl)
+                      : AssetImage(widget.imageUrl) as ImageProvider,
+                  backgroundColor: Colors.grey[200],
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircleAvatar(
+                      radius: 18,
+                      backgroundImage: widget.imageUrl.startsWith('http')
+                          ? NetworkImage(widget.imageUrl)
+                          : AssetImage(widget.imageUrl) as ImageProvider,
+                      backgroundColor: Colors.grey[200],
                     ),
-                  ),
-                  Text(
-                    widget.role,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: dark,
-                      fontFamily: 'Poppins',
+                    const SizedBox(width: 10),
+                    Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.name,
+                          style: GoogleFonts.poppins(
+                            fontWeight: FontWeight.bold,
+                            color: dark,
+                          ),
+                        ),
+                        Text(
+                          widget.role,
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            color: dark,
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
-            ],
-          ),
+                  ],
+                ),
         ),
       ),
     );
@@ -131,12 +142,12 @@ class _FeedbacksPageState extends State<FeedbacksPage> {
   bool _adminInfoLoaded = false;
   bool _feedbacksLoaded = false;
 
-  // For Application Logo
   String? _applicationLogoUrl;
   bool _logoLoaded = false;
 
-  bool get _allDataLoaded =>
-      _adminInfoLoaded && _feedbacksLoaded && _logoLoaded;
+  final _encryptionService = EncryptionService(); 
+
+  bool get _allDataLoaded => _adminInfoLoaded && _feedbacksLoaded && _logoLoaded;
 
   @override
   void initState() {
@@ -194,7 +205,6 @@ class _FeedbacksPageState extends State<FeedbacksPage> {
           final lastName = data?['lastName'] ?? '';
           setState(() {
             fullName = capitalizeEachWord('$firstName $lastName');
-            // The following line fetches and updates the profilePictureUrl if it exists
             profilePictureUrl =
                 doc['profilePicture'] ?? "assets/images/defaultDP.jpg";
             _adminInfoLoaded = true;
@@ -213,53 +223,127 @@ class _FeedbacksPageState extends State<FeedbacksPage> {
 
   Future<void> _loadFeedbacks() async {
     try {
+      print('Fetching feedbacks for department: admin');
+
       final snapshot = await FirebaseFirestore.instance
-          .collection('Feedbacks')
+          .collection('feedback')
           .orderBy('timestamp', descending: false)
           .get();
 
-      final List<Map<String, dynamic>> loadedFeedbacks = snapshot.docs.map((
-        doc,
-      ) {
-        final data = doc.data();
-        return {
-          'docId': doc.id,
-          'feedback': data['message'] ?? '',
-          'sentiment': data['sentiment'] ?? 'neutral',
-          'user': capitalizeEachWord(data['name'] ?? 'Unknown'),
-          'email': data['email'] ?? '',
-          'timestamp': data['timestamp'] != null
-              ? DateFormat(
-                  'MM-dd-yyyy h:mm a',
-                ).format((data['timestamp'] as Timestamp).toDate())
-              : '',
-          'status': data['status'] ?? 'new',
-          'botResponse': data['botResponse'] ?? '',
-        };
+      final filteredDocs = snapshot.docs.where((doc) {
+        final data = doc.data() as Map<String, dynamic>;
+        final dept = (data['department'] ?? '').toString().trim().toLowerCase();
+        return dept == 'admin';
       }).toList();
+
+      print('Fetched ${filteredDocs.length} admin feedbacks.');
+
+      // ✅ DECRYPT EMAILS WHILE MAPPING
+      final List<Map<String, dynamic>> loadedFeedbacks = [];
+
+      for (var doc in filteredDocs) {
+        final data = doc.data() as Map<String, dynamic>;
+
+        final rawName = (data['user_name'] ?? data['userName'] ?? data['user'] ?? '')
+            .toString()
+            .trim();
+        final rawEmailEncrypted =
+            (data['user_email'] ?? data['userEmail'] ?? data['email'] ?? '')
+                .toString()
+                .trim();
+        final uidRaw = (data['uid'] ?? data['userId'] ?? '').toString().trim();
+
+        String decryptedEmail = '';
+        if (rawEmailEncrypted.isNotEmpty) {
+          try {
+            if (rawEmailEncrypted.contains('@')) {
+              decryptedEmail = rawEmailEncrypted; 
+              print('📧 Email already plain text: $decryptedEmail');
+            } else {
+              decryptedEmail = await _encryptionService.decryptValue(rawEmailEncrypted);
+              print('🔓 Decrypted email: $decryptedEmail');
+            }
+          } catch (e) {
+            print('⚠️ Failed to decrypt email for doc ${doc.id}: $e');
+            decryptedEmail = '[Encrypted]';
+          }
+        }
+
+        String displayUser;
+        if (rawName.isNotEmpty) {
+          displayUser = capitalizeEachWord(rawName);
+        } else if (decryptedEmail.isNotEmpty && decryptedEmail != '[Encrypted]') {
+          displayUser = decryptedEmail.split('@').first;
+        } else if (uidRaw.isNotEmpty) {
+          displayUser = uidRaw;
+        } else {
+          displayUser = 'Unknown User';
+        }
+
+        final isPositiveRaw = data['isPositive'] ?? data['is_positive'] ?? false;
+        final sentiment =
+            (isPositiveRaw == true || isPositiveRaw.toString().toLowerCase() == 'true')
+                ? 'positive'
+                : 'negative';
+
+        final timestampDisplay = data['timestamp'] != null
+            ? (data['timestamp'] is Timestamp
+                ? DateFormat('MM-dd-yyyy h:mm a')
+                    .format((data['timestamp'] as Timestamp).toDate())
+                : data['timestamp'].toString())
+            : '';
+
+        final statusValue = (data['status'] ?? 'new').toString();
+
+        loadedFeedbacks.add({
+          'docId': doc.id,
+          'feedback': (data['feedback_comment'] ??
+                  data['feedbackComment'] ??
+                  data['message'] ??
+                  data['feedback'] ??
+                  '')
+              .toString(),
+          'sentiment': sentiment,
+          'user_name': rawName,
+          'user_email': decryptedEmail, 
+          'user_email_encrypted': rawEmailEncrypted,
+          'user': displayUser,
+          'email': decryptedEmail,
+          'uid': uidRaw,
+          'timestamp': timestampDisplay,
+          'status': statusValue,
+          'question': data['question'] ?? '',
+          'answer': data['answer'] ?? '',
+          'department': data['department'] ?? '',
+          '_raw': data,
+        });
+      }
 
       setState(() {
         feedbackList = loadedFeedbacks;
         _feedbacksLoaded = true;
       });
-    } catch (e) {
-      print('Error loading feedbacks: $e');
+    } catch (e, st) {
+      print('Error loading admin feedbacks: $e\n$st');
       setState(() => _feedbacksLoaded = true);
     }
   }
 
   List<Map<String, dynamic>> _getFeedbacksByStatus(String status) {
-  final query = _searchController.text.toLowerCase();
-  final filter = _selectedFilter.toLowerCase();
+    final query = _searchController.text.toLowerCase();
+    final filter = _selectedFilter.toLowerCase();
 
-  return feedbackList.where((item) {
-    final matchesStatus = item['status'] == status;
-    final matchesQuery = item['feedback'].toLowerCase().contains(query) ||
-                         item['user'].toLowerCase().contains(query); // <-- changed
-    final matchesFilter = filter == 'all' || item['sentiment'].toLowerCase() == filter;
-    return matchesStatus && matchesQuery && matchesFilter;
-  }).toList();
-}
+    return feedbackList.where((item) {
+      final matchesStatus = item['status'] == status;
+      
+      final searchableText = '${item['feedback'] ?? ''} ${item['user'] ?? ''} ${item['user_name'] ?? ''} ${item['user_email'] ?? ''}'.toLowerCase();
+      
+      final matchesQuery = searchableText.contains(query);
+      final matchesFilter =
+          filter == 'all' || item['sentiment'].toLowerCase() == filter;
+      return matchesStatus && matchesQuery && matchesFilter;
+    }).toList();
+  }
 
   Future<void> _updateFeedbackStatus(
     BuildContext context,
@@ -269,15 +353,13 @@ class _FeedbacksPageState extends State<FeedbacksPage> {
     String successMessage,
   ) async {
     try {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('Feedbacks')
-          .where('message', isEqualTo: item['feedback'])
-          .where('email', isEqualTo: item['email'])
-          .limit(1)
-          .get();
+      final firestore = FirebaseFirestore.instance;
 
-      if (snapshot.docs.isNotEmpty) {
-        await snapshot.docs.first.reference.update({'status': newStatus});
+      final docId = item['docId'] as String?;
+      if (docId != null && docId.isNotEmpty) {
+        final docRef = firestore.collection('feedback').doc(docId);
+        await docRef.update({'status': newStatus});
+        print('Updated feedback $docId → $newStatus (by docId)');
         await Future.delayed(const Duration(milliseconds: 200));
         await refresh();
 
@@ -290,14 +372,50 @@ class _FeedbacksPageState extends State<FeedbacksPage> {
             duration: const Duration(seconds: 2),
             backgroundColor: primarycolor,
             behavior: SnackBarBehavior.floating,
+            margin: const EdgeInsets.all(16),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(8),
             ),
           ),
         );
+        return;
       }
-    } catch (e) {
-      print('Error updating feedback status: $e');
+
+      final feedbackText = (item['feedback'] ?? '').toString().trim();
+
+      final snapshot = await firestore
+          .collection('feedback')
+          .where('feedback_comment', isEqualTo: feedbackText)
+          .limit(1)
+          .get();
+
+      if (snapshot.docs.isNotEmpty) {
+        final docRef = snapshot.docs.first.reference;
+        await docRef.update({'status': newStatus});
+        print('Updated feedback ${docRef.id} → $newStatus (fallback match)');
+        await Future.delayed(const Duration(milliseconds: 200));
+        await refresh();
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              successMessage,
+              style: GoogleFonts.poppins(color: Colors.white),
+            ),
+            duration: const Duration(seconds: 2),
+            backgroundColor: primarycolor,
+            behavior: SnackBarBehavior.floating,
+            margin: const EdgeInsets.all(16),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
+          ),
+        );
+      } else {
+        print("⚠️ No matching feedback found for update.");
+      }
+    } catch (e, st) {
+      print('Error updating feedback status: $e\n$st');
     }
   }
 
@@ -305,7 +423,6 @@ class _FeedbacksPageState extends State<FeedbacksPage> {
     final list = _getFeedbacksByStatus(status);
 
     if (list.isEmpty) {
-      // Centered illustration with text when empty
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -317,12 +434,11 @@ class _FeedbacksPageState extends State<FeedbacksPage> {
               fit: BoxFit.contain,
             ),
             const SizedBox(height: 20),
-            const Text(
+            Text(
               "No item to show.",
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 fontSize: 14,
                 color: Colors.grey,
-                fontFamily: 'Poppins',
               ),
             ),
           ],
@@ -341,13 +457,6 @@ class _FeedbacksPageState extends State<FeedbacksPage> {
             feedback: feedback,
             getIcon: _getIcon,
             currentStatus: status,
-            onMarkReviewed: () => _updateFeedbackStatus(
-              context,
-              feedback,
-              'reviewed',
-              _loadFeedbacks,
-              "Marked as reviewed!",
-            ),
             onArchive: () => _updateFeedbackStatus(
               context,
               feedback,
@@ -382,7 +491,6 @@ class _FeedbacksPageState extends State<FeedbacksPage> {
 
   @override
   Widget build(BuildContext context) {
-    // Loader screen covers everything until _allDataLoaded
     if (!_allDataLoaded) {
       return Scaffold(
         backgroundColor: lightBackground,
@@ -397,147 +505,152 @@ class _FeedbacksPageState extends State<FeedbacksPage> {
     }
 
     final newCount = feedbackList.where((f) => f['status'] == 'new').length;
-    final reviewedCount = feedbackList
-        .where((f) => f['status'] == 'reviewed')
-        .length;
-    final archivedCount = feedbackList
-        .where((f) => f['status'] == 'archived')
-        .length;
+    final transferredCount =
+        feedbackList.where((f) => f['status'] == 'transferred').length;
+    final archivedCount =
+        feedbackList.where((f) => f['status'] == 'archived').length;
 
-    return Scaffold(
-      drawer: NavigationDrawer(
-        applicationLogoUrl: _applicationLogoUrl,
-        activePage: "Feedbacks",
+    final poppinsTextTheme =
+        GoogleFonts.poppinsTextTheme(Theme.of(context).textTheme)
+            .apply(bodyColor: dark, displayColor: dark);
+
+    return Theme(
+      data: Theme.of(context).copyWith(
+        textTheme: poppinsTextTheme,
+        primaryTextTheme: poppinsTextTheme,
       ),
-      appBar: AppBar(
-        backgroundColor: lightBackground,
-        iconTheme: const IconThemeData(color: primarycolordark),
-        elevation: 0,
-        titleSpacing: 0,
-        title: const Row(
-          children: [
-            SizedBox(width: 12),
-            Text(
-              "Feedbacks",
-              style: TextStyle(
-                color: primarycolordark,
-                fontWeight: FontWeight.bold,
-                fontFamily: 'Poppins',
+      child: Scaffold(
+        drawer: NavigationDrawer(
+          applicationLogoUrl: _applicationLogoUrl,
+          activePage: "Feedbacks",
+        ),
+        appBar: AppBar(
+          backgroundColor: lightBackground,
+          iconTheme: const IconThemeData(color: primarycolordark),
+          elevation: 0,
+          titleSpacing: 0,
+          title: Row(
+            children: [
+              const SizedBox(width: 12),
+              Text(
+                "Feedbacks",
+                style: GoogleFonts.poppins(
+                  color: primarycolordark,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            Padding(
+              padding: const EdgeInsets.only(right: 16.0),
+              child: ProfileButton(
+                imageUrl: profilePictureUrl,
+                name: fullName.trim().isNotEmpty ? fullName : "Loading...",
+                role: "Super Admin",
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const AdminProfilePage()),
+                  );
+                },
               ),
             ),
           ],
         ),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 16.0),
-            child: ProfileButton(
-              imageUrl: profilePictureUrl,
-              name: fullName.trim().isNotEmpty ? fullName : "Loading...",
-              role: "Super Admin",
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const AdminProfilePage()),
-                );
-              },
-            ),
+        backgroundColor: lightBackground,
+        body: DefaultTabController(
+          length: 2, 
+          child: Column(
+            children: [
+              const SizedBox(height: 16),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32.0),
+                child: Column(
+                  children: [
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        int columns = constraints.maxWidth > 800 ? 3 : 1;
+                        double spacing = 12;
+                        double totalSpacing = (columns - 1) * spacing;
+                        double cardWidth =
+                            (constraints.maxWidth - totalSpacing) / columns;
+                        return Wrap(
+                          spacing: spacing,
+                          runSpacing: spacing,
+                          children: [
+                            StatCard(
+                              title: "Total Feedback",
+                              value: "${feedbackList.length}",
+                              color: primarycolordark,
+                              width: cardWidth,
+                            ),
+                            StatCard(
+                              title: "Positive Feedback",
+                              value:
+                                  "${feedbackList.where((f) => f['sentiment'] == 'positive').length}",
+                              color: primarycolor,
+                              width: cardWidth,
+                            ),
+                            StatCard(
+                              title: "Negative Feedback",
+                              value:
+                                  "${feedbackList.where((f) => f['sentiment'] == 'negative').length}",
+                              color: secondarycolor,
+                              width: cardWidth,
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 24),
+                    Row(
+                      children: [
+                        Expanded(
+                            child: SearchBar(controller: _searchController)),
+                        const SizedBox(width: 12),
+                        FilterDropdown(
+                          selectedFilter: _selectedFilter,
+                          onChanged: (value) {
+                            if (value != null) {
+                              setState(() {
+                                _selectedFilter = value;
+                              });
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              TabBar(
+                labelColor: primarycolor,
+                unselectedLabelColor: dark,
+                indicatorColor: primarycolor,
+                indicatorWeight: 3,
+                indicatorPadding:
+                    const EdgeInsets.symmetric(horizontal: 16),
+                labelStyle: GoogleFonts.poppins(
+                    fontWeight: FontWeight.bold, fontSize: 14),
+                tabs: [
+                  Tab(text: 'New ($newCount)'),
+                  Tab(text: 'Archived ($archivedCount)'),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: TabBarView(
+                  children: [
+                    _buildFeedbackList('new'),
+                    _buildFeedbackList('archived'),
+                  ],
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
-      backgroundColor: lightBackground,
-      body: DefaultTabController(
-        length: 3,
-        child: Column(
-          children: [
-            const SizedBox(height: 16),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32.0),
-              child: Column(
-                children: [
-                  LayoutBuilder(
-                    builder: (context, constraints) {
-                      int columns = constraints.maxWidth > 800 ? 3 : 1;
-                      double spacing = 12;
-                      double totalSpacing = (columns - 1) * spacing;
-                      double cardWidth =
-                          (constraints.maxWidth - totalSpacing) / columns;
-                      return Wrap(
-                        spacing: spacing,
-                        runSpacing: spacing,
-                        children: [
-                          StatCard(
-                            title: "Total Feedback",
-                            value: "${feedbackList.length}",
-                            color: primarycolordark,
-                            width: cardWidth,
-                          ),
-                          StatCard(
-                            title: "Positive Feedback",
-                            value:
-                                "${feedbackList.where((f) => f['sentiment'] == 'positive').length}",
-                            color: primarycolor,
-                            width: cardWidth,
-                          ),
-                          StatCard(
-                            title: "Negative Feedback",
-                            value:
-                                "${feedbackList.where((f) => f['sentiment'] == 'negative').length}",
-                            color: secondarycolor,
-                            width: cardWidth,
-                          ),
-                        ],
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 24),
-                  Row(
-                    children: [
-                      Expanded(child: SearchBar(controller: _searchController)),
-                      const SizedBox(width: 12),
-                      FilterDropdown(
-                        selectedFilter: _selectedFilter,
-                        onChanged: (value) {
-                          if (value != null) {
-                            setState(() {
-                              _selectedFilter = value;
-                            });
-                          }
-                        },
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            TabBar(
-              labelColor: primarycolor,
-              unselectedLabelColor: dark,
-              indicatorColor: primarycolor,
-              indicatorWeight: 3,
-              indicatorPadding: const EdgeInsets.symmetric(horizontal: 16),
-              labelStyle: const TextStyle(
-                fontFamily: 'Poppins',
-                fontWeight: FontWeight.bold,
-                fontSize: 14,
-              ),
-              tabs: [
-                Tab(text: 'New ($newCount)'),
-                Tab(text: 'Reviewed ($reviewedCount)'),
-                Tab(text: 'Archived ($archivedCount)'),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Expanded(
-              child: TabBarView(
-                children: [
-                  _buildFeedbackList('new'),
-                  _buildFeedbackList('reviewed'),
-                  _buildFeedbackList('archived'),
-                ],
-              ),
-            ),
-          ],
         ),
       ),
     );
@@ -548,7 +661,6 @@ class FeedbackCard extends StatelessWidget {
   final Map<String, dynamic> feedback;
   final Icon Function(String) getIcon;
   final String currentStatus;
-  final VoidCallback onMarkReviewed;
   final VoidCallback onArchive;
   final VoidCallback onUnarchive;
   final Future<void> Function() onRefresh;
@@ -558,24 +670,51 @@ class FeedbackCard extends StatelessWidget {
     required this.feedback,
     required this.getIcon,
     required this.currentStatus,
-    required this.onMarkReviewed,
     required this.onArchive,
     required this.onUnarchive,
     required this.onRefresh,
   });
 
-  // Helper to check guest
   bool isGuestFeedback(Map<String, dynamic> feedback) {
-    final email = feedback['email'] ?? '';
-    return email.startsWith('guest_') || email.isEmpty;
+    final raw = feedback['_raw'] as Map<String, dynamic>?;
+    if (raw != null) {
+      if (raw['isGuest'] == true || raw['is_guest'] == true) return true;
+    }
+    return false;
   }
 
   @override
   Widget build(BuildContext context) {
-    final isPositive = feedback['sentiment'] == 'positive';
+    final isPositive = (feedback['sentiment'] ?? '').toString() == 'positive';
     final sentimentLabel = isPositive ? "Positive" : "Negative";
     final sentimentColor = isPositive ? Colors.green : Colors.red;
-    final isGuest = isGuestFeedback(feedback);
+
+    final bool isGuest = isGuestFeedback(feedback);
+
+    final rawName = (feedback['user_name'] ?? '').toString().trim();
+    final decryptedEmail = (feedback['user_email'] ?? feedback['email'] ?? '')
+        .toString()
+        .trim(); 
+    final rawUid = (feedback['uid'] ?? feedback['user'] ?? '').toString().trim();
+
+    String displayUser;
+    if (isGuest) {
+      displayUser = 'Guest User';
+    } else if (rawName.isNotEmpty) {
+      displayUser = capitalizeEachWord(rawName);
+    } else if (decryptedEmail.isNotEmpty && decryptedEmail != '[Encrypted]') {
+      displayUser = decryptedEmail.split('@').first;
+    } else if (rawUid.isNotEmpty) {
+      displayUser = rawUid;
+    } else {
+      displayUser = 'Unknown User';
+    }
+
+    final displayEmail = isGuest ? '' : decryptedEmail;
+
+    final hasEmail = decryptedEmail.isNotEmpty && decryptedEmail != '[Encrypted]';
+    final hasUserName = rawName.isNotEmpty;
+    final bool legacyIsGuest = isGuest || !(hasEmail || hasUserName);
 
     return Card(
       color: Colors.white,
@@ -587,7 +726,6 @@ class FeedbackCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // User Info & Timestamp
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -596,23 +734,25 @@ class FeedbackCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        feedback['user'],
-                        style: const TextStyle(
+                        displayUser,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.poppins(
                           fontWeight: FontWeight.bold,
                           fontSize: 14,
                           color: dark,
-                          fontFamily: 'Poppins',
                         ),
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        isGuest
-                          ? "Guest ID: ${feedback['docId'] ?? 'n/a'}"
-                          : "Email: ${feedback['email'] ?? 'n/a'}",
-                        style: const TextStyle(
+                        legacyIsGuest
+                            ? "Guest ID: ${feedback['docId'] ?? 'n/a'}"
+                            : "Email: ${displayEmail.isNotEmpty && displayEmail != '[Encrypted]' ? displayEmail : 'n/a'}",
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.poppins(
                           fontSize: 12,
-                          color: dark,
-                          fontFamily: 'Poppins',
+                          color: displayEmail == '[Encrypted]' ? Colors.red : dark,
                         ),
                       ),
                     ],
@@ -621,19 +761,15 @@ class FeedbackCard extends StatelessWidget {
                 const SizedBox(width: 12),
                 Text(
                   feedback['timestamp'] ?? '',
-                  style: const TextStyle(
+                  style: GoogleFonts.poppins(
                     fontSize: 12,
                     color: dark,
-                    fontFamily: 'Poppins',
                   ),
                 ),
               ],
             ),
-
             const SizedBox(height: 12),
-
-            // Bot Response
-            if ((feedback['botResponse'] ?? '').isNotEmpty)
+            if ((feedback['answer'] ?? '').isNotEmpty)
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(12),
@@ -643,474 +779,73 @@ class FeedbackCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Text(
-                  "${feedback['botResponse']}",
-                  style: const TextStyle(
+                  "${feedback['answer']}",
+                  style: GoogleFonts.poppins(
                     fontSize: 13,
-                    fontFamily: 'Poppins',
                     color: dark,
                   ),
                 ),
               ),
-
-            // Feedback + Sentiment
             Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Container(
                   margin: const EdgeInsets.only(right: 8),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
-                  ),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
                     color: sentimentColor.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
                     sentimentLabel,
-                    style: TextStyle(
+                    style: GoogleFonts.poppins(
                       fontSize: 12,
                       color: sentimentColor,
                       fontWeight: FontWeight.bold,
-                      fontFamily: 'Poppins',
                     ),
                   ),
                 ),
                 Expanded(
                   child: Text(
                     feedback['feedback'],
-                    style: const TextStyle(
+                    style: GoogleFonts.poppins(
                       fontSize: 14,
                       color: dark,
-                      fontFamily: 'Poppins',
                     ),
                   ),
                 ),
               ],
             ),
-
             const SizedBox(height: 16),
-
-            // Buttons
             if (currentStatus == 'new') ...[
               LayoutBuilder(
                 builder: (context, constraints) {
-                  final buttonWidth = isGuest
-                    ? (constraints.maxWidth - 8) / 2
-                    : (constraints.maxWidth - 16) / 3;
-
+                  final buttonWidth = (constraints.maxWidth - 16) / 2;
                   return Row(
                     children: [
                       SizedBox(
                         width: buttonWidth,
-                        child: OutlinedButton.icon(
-                          onPressed: onMarkReviewed,
-                          icon: const Icon(
-                            Icons.check_circle_outline,
-                            size: 16,
-                          ),
-                          label: const Text("Mark as Reviewed"),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: primarycolor,
-                            side: const BorderSide(color: primarycolor),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 12,
-                            ),
-                            textStyle: const TextStyle(fontSize: 12),
-                          ),
+                        child: _SendToAdminModalButton(
+                          feedback: feedback,
+                          onRefresh: onRefresh,
                         ),
                       ),
                       const SizedBox(width: 8),
-                      if (!isGuest) ...[
-                        SizedBox(
-                          width: buttonWidth,
-                          child: ElevatedButton.icon(
-                            onPressed: () async {
-                              final email = feedback['email'];
-                              final firstName = feedback['user'].split(' ').first;
-                              final currentUser =
-                                  FirebaseAuth.instance.currentUser;
-
-                              try {
-                                // Fetch the userId from 'users' collection based on email
-                                final userSnapshot = await FirebaseFirestore
-                                    .instance
-                                    .collection('users')
-                                    .where('email', isEqualTo: email)
-                                    .limit(1)
-                                    .get();
-
-                                if (userSnapshot.docs.isEmpty) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text("User not found."),
-                                    ),
-                                  );
-                                  return;
-                                }
-
-                                final userId = userSnapshot.docs.first.id;
-
-                                if (isPositive) {
-                                  // Send thank-you notification
-                                  await FirebaseFirestore.instance
-                                      .collection('Notifications')
-                                      .add({
-                                        'userId': userId,
-                                        'email': email,
-                                        'title': 'Thank You',
-                                        'message':
-                                            "Thank you $firstName  for your kind words. We're glad you're satisfied!",
-                                        'timestamp': FieldValue.serverTimestamp(),
-                                        'status': 'unread',
-                                        'sentBy': currentUser?.email ?? 'admin',
-                                      });
-
-                                  // Update feedback status
-                                  await FirebaseFirestore.instance
-                                      .collection('Feedbacks')
-                                      .where(
-                                        'message',
-                                        isEqualTo: feedback['feedback'],
-                                      )
-                                      .where('email', isEqualTo: email)
-                                      .limit(1)
-                                      .get()
-                                      .then((snapshot) {
-                                        if (snapshot.docs.isNotEmpty) {
-                                          snapshot.docs.first.reference.update({
-                                            'status': 'reviewed',
-                                          });
-                                        }
-                                      });
-
-                                  await onRefresh();
-
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        "Thank you message sent!",
-                                        style: GoogleFonts.poppins(
-                                          color: Colors.white,
-                                        ),
-                                      ),
-                                      duration: const Duration(seconds: 2),
-                                      backgroundColor: primarycolor,
-                                      behavior: SnackBarBehavior.floating,
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                    ),
-                                  );
-                                } else {
-                                  // Respond directly (dialog)
-                                  final String userName =
-                                      feedback['user'] ?? 'User';
-                                  final TextEditingController
-                                  _responseController = TextEditingController();
-
-                                  await showDialog(
-                                    context: context,
-                                    builder: (context) => AlertDialog(
-                                      backgroundColor: lightBackground,
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(16),
-                                      ),
-                                      title: Text(
-                                        'Respond to Users Feedback',
-                                        style: GoogleFonts.poppins(
-                                          fontWeight: FontWeight.bold,
-                                          color: primarycolordark,
-                                        ),
-                                      ),
-                                      content: SizedBox(
-                                        width: 400,
-                                        child: Column(
-                                          mainAxisSize: MainAxisSize.min,
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              'Your response will be sent to $userName.',
-                                              style: GoogleFonts.poppins(
-                                                fontSize: 14,
-                                                color: dark,
-                                              ),
-                                            ),
-                                            const SizedBox(height: 12),
-                                            TextField(
-                                              controller: _responseController,
-                                              maxLines: 5,
-                                              decoration: InputDecoration(
-                                                hintText:
-                                                    'Type your response here...',
-                                                hintStyle: GoogleFonts.poppins(
-                                                  color: dark,
-                                                ),
-                                                filled: true,
-                                                fillColor: Colors.white,
-                                                border: OutlineInputBorder(
-                                                  borderRadius:
-                                                      BorderRadius.circular(8),
-                                                  borderSide: const BorderSide(
-                                                    color: Color(0xFFCCCCCC),
-                                                  ),
-                                                ),
-                                                contentPadding:
-                                                    const EdgeInsets.all(12),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      actionsPadding: const EdgeInsets.only(
-                                        right: 16,
-                                        bottom: 8,
-                                      ),
-                                      actions: [
-                                        TextButton(
-                                          onPressed: () => Navigator.pop(context),
-                                          child: Text(
-                                            'Cancel',
-                                            style: GoogleFonts.poppins(
-                                              color: dark,
-                                            ),
-                                          ),
-                                        ),
-                                        ElevatedButton(
-                                          style: ElevatedButton.styleFrom(
-                                            backgroundColor: primarycolor,
-                                            foregroundColor: Colors.white,
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 20,
-                                              vertical: 12,
-                                            ),
-                                            shape: RoundedRectangleBorder(
-                                              borderRadius: BorderRadius.circular(
-                                                8,
-                                              ),
-                                            ),
-                                          ),
-                                          onPressed: () async {
-                                            final responseText =
-                                                _responseController.text.trim();
-
-                                            if (responseText.isNotEmpty) {
-                                              Navigator.pop(context);
-
-                                              try {
-                                                final currentUser = FirebaseAuth
-                                                    .instance
-                                                    .currentUser;
-                                                final email = feedback['email'];
-
-                                                final userSnapshot =
-                                                    await FirebaseFirestore
-                                                        .instance
-                                                        .collection('users')
-                                                        .where(
-                                                          'email',
-                                                          isEqualTo: email,
-                                                        )
-                                                        .limit(1)
-                                                        .get();
-
-                                                if (userSnapshot.docs.isEmpty) {
-                                                  ScaffoldMessenger.of(
-                                                    context,
-                                                  ).showSnackBar(
-                                                    const SnackBar(
-                                                      content: Text(
-                                                        "User not found.",
-                                                      ),
-                                                    ),
-                                                  );
-                                                  return;
-                                                }
-
-                                                final userId =
-                                                    userSnapshot.docs.first.id;
-
-                                                final fullMessage =
-                                                    "$responseText\n\nIf you have further concerns, feel free to contact us at support@dhvsu.edu.ph or call (045) 123-4567.";
-
-                                                await FirebaseFirestore.instance
-                                                    .collection('Notifications')
-                                                    .add({
-                                                      'userId': userId,
-                                                      'email': email,
-                                                      'title':
-                                                          'Feedback Response',
-                                                      'message': fullMessage,
-                                                      'timestamp':
-                                                          FieldValue.serverTimestamp(),
-                                                      'status': 'unread',
-                                                      'sentBy':
-                                                          currentUser?.email ??
-                                                          'super admin',
-                                                    });
-
-                                                await FirebaseFirestore.instance
-                                                    .collection('Feedbacks')
-                                                    .where(
-                                                      'message',
-                                                      isEqualTo:
-                                                          feedback['feedback'],
-                                                    )
-                                                    .where(
-                                                      'email',
-                                                      isEqualTo: email,
-                                                    )
-                                                    .limit(1)
-                                                    .get()
-                                                    .then((snapshot) {
-                                                      if (snapshot
-                                                          .docs
-                                                          .isNotEmpty) {
-                                                        snapshot
-                                                            .docs
-                                                            .first
-                                                            .reference
-                                                            .update({
-                                                              'status':
-                                                                  'reviewed',
-                                                            });
-                                                      }
-                                                    });
-
-                                                await onRefresh();
-
-                                                ScaffoldMessenger.of(
-                                                  context,
-                                                ).showSnackBar(
-                                                  SnackBar(
-                                                    content: Text(
-                                                      "Response sent and saved!",
-                                                      style: GoogleFonts.poppins(
-                                                        color: Colors.white,
-                                                      ),
-                                                    ),
-                                                    duration: const Duration(
-                                                      seconds: 2,
-                                                    ),
-                                                    backgroundColor: primarycolor,
-                                                    behavior:
-                                                        SnackBarBehavior.floating,
-                                                    shape: RoundedRectangleBorder(
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                            8,
-                                                          ),
-                                                    ),
-                                                  ),
-                                                );
-                                              } catch (e) {
-                                                print(
-                                                  'Error sending response: $e',
-                                                );
-                                                ScaffoldMessenger.of(
-                                                  context,
-                                                ).showSnackBar(
-                                                  SnackBar(
-                                                    content: Text(
-                                                      "Failed to send response",
-                                                      style: GoogleFonts.poppins(
-                                                        color: Colors.white,
-                                                      ),
-                                                    ),
-                                                    duration: const Duration(
-                                                      seconds: 2,
-                                                    ),
-                                                    backgroundColor: Colors.red,
-                                                    behavior:
-                                                        SnackBarBehavior.floating,
-                                                    shape: RoundedRectangleBorder(
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                            8,
-                                                          ),
-                                                    ),
-                                                  ),
-                                                );
-                                              }
-                                            }
-                                          },
-                                          child: Text(
-                                            'Send',
-                                            style: GoogleFonts.poppins(
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                        ),
-                                        const SizedBox(height: 25),
-                                      ],
-                                    ),
-                                  );
-                                }
-                              } catch (e) {
-                                print('Error processing feedback: $e');
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      "Unexpected error",
-                                      style: GoogleFonts.poppins(
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                    duration: const Duration(seconds: 2),
-                                    backgroundColor: Colors.red,
-                                    behavior: SnackBarBehavior.floating,
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                  ),
-                                );
-                              }
-                            },
-                            icon: Icon(
-                              isPositive ? Icons.thumb_up_alt : Icons.reply,
-                              size: 16,
-                            ),
-                            label: Text(
-                              isPositive ? "Send Thanks" : "Respond Directly",
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: primarycolor,
-                              foregroundColor: Colors.white,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 12,
-                              ),
-                              textStyle: const TextStyle(fontSize: 12),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                      ],
                       SizedBox(
                         width: buttonWidth,
                         child: ElevatedButton.icon(
                           onPressed: onArchive,
                           icon: const Icon(Icons.archive_outlined, size: 16),
-                          label: const Text("Archive"),
+                          label: Text("Archive", style: GoogleFonts.poppins()),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: secondarycolor,
                             foregroundColor: Colors.white,
                             shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10),
-                            ),
+                                borderRadius: BorderRadius.circular(10)),
                             padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 12,
-                            ),
-                            textStyle: const TextStyle(fontSize: 12),
+                                horizontal: 8, vertical: 12),
+                            textStyle: GoogleFonts.poppins(fontSize: 12),
                           ),
                         ),
                       ),
@@ -1125,18 +860,15 @@ class FeedbackCard extends StatelessWidget {
                   ElevatedButton.icon(
                     onPressed: onUnarchive,
                     icon: const Icon(Icons.unarchive),
-                    label: const Text("Unarchive"),
+                    label: Text("Unarchive", style: GoogleFonts.poppins()),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: primarycolor,
                       foregroundColor: Colors.white,
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
+                          borderRadius: BorderRadius.circular(10)),
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 12,
-                      ),
-                      textStyle: const TextStyle(fontSize: 12),
+                          horizontal: 12, vertical: 12),
+                      textStyle: GoogleFonts.poppins(fontSize: 12),
                     ),
                   ),
                 ],
@@ -1144,6 +876,237 @@ class FeedbackCard extends StatelessWidget {
             ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _SendToAdminModalButton extends StatefulWidget {
+  final Map<String, dynamic> feedback;
+  final Future<void> Function() onRefresh;
+
+  const _SendToAdminModalButton({
+    required this.feedback,
+    required this.onRefresh,
+  });
+
+  @override
+  State<_SendToAdminModalButton> createState() =>
+      _SendToAdminModalButtonState();
+}
+
+class _SendToAdminModalButtonState extends State<_SendToAdminModalButton> {
+  bool isLoading = false;
+
+  Future<void> _showDepartmentDialog(BuildContext context) async {
+    String? selectedDepartment;
+
+    final Map<String, String> deptMap = {
+      'About PSU': 'AboutPSU',
+      'Academic Honors': 'AcademicHonors',
+      'Accredited RSO': 'RSO',
+      'Administrative': 'Administrative',
+      'College of Arts and Sciences': 'CAS',
+      'College of Business Administration and Accountancy': 'CBAA',
+      'College of Computing Studies': 'CCS',
+      'College of Education': 'COE',
+      'College of Engineering and Architecture': 'CEA',
+      'College of Hospitality and Tourism Management': 'CHTM',
+      'College of Industrial Technology': 'CIT',
+      'Management Information Systems Office': 'MIS',
+      'Multipurpose Cooperative Office': 'COOP',
+      'Office of Admission': 'Admission',
+      'Office of Culture and the Arts': 'OCA',
+      'Office of Registrar': 'Registrar',
+      'Office of Student Affairs and Development': 'OSA',
+      'Office of Student Welfare and Formation': 'OSWF',
+    };
+
+    final List<String> departmentList = deptMap.keys.toList();
+    final feedbackDeptRaw = widget.feedback['department']?.toString().trim();
+
+    if (feedbackDeptRaw != null && feedbackDeptRaw.isNotEmpty) {
+      if (departmentList.contains(feedbackDeptRaw)) {
+        selectedDepartment = feedbackDeptRaw;
+      } else {
+        final matchedEntry = deptMap.entries.firstWhere(
+          (e) => e.value.toLowerCase() == feedbackDeptRaw.toLowerCase(),
+          orElse: () =>
+              MapEntry(departmentList.first, deptMap[departmentList.first]!),
+        );
+        selectedDepartment = matchedEntry.key;
+      }
+    } else {
+      selectedDepartment = departmentList.first;
+    }
+
+    bool modalLoading = false;
+    await showDialog(
+      context: context,
+      barrierDismissible: !modalLoading,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (innerContext, setInnerState) {
+            return AlertDialog(
+              backgroundColor: lightBackground,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
+              title: Text(
+                "Choose Department",
+                style: GoogleFonts.poppins(
+                  fontWeight: FontWeight.bold,
+                  color: primarycolordark,
+                ),
+              ),
+              content: DropdownButtonFormField<String>(
+                value: selectedDepartment,
+                decoration: InputDecoration(
+                  labelText: "Department",
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                ),
+                items: departmentList
+                    .map((d) => DropdownMenuItem(
+                          value: d,
+                          child: Text(d, style: GoogleFonts.poppins()),
+                        ))
+                    .toList(),
+                onChanged: modalLoading
+                    ? null
+                    : (val) => setInnerState(() => selectedDepartment = val),
+              ),
+              actions: [
+                TextButton(
+                  onPressed:
+                      modalLoading ? null : () => Navigator.pop(innerContext),
+                  child:
+                      Text("Cancel", style: GoogleFonts.poppins(color: dark)),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: primarycolor,
+                    foregroundColor: Colors.white,
+                    textStyle:
+                        GoogleFonts.poppins(fontWeight: FontWeight.bold),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                  ),
+                  onPressed:
+                      (selectedDepartment == null || modalLoading)
+                          ? null
+                          : () async {
+                              setInnerState(() => modalLoading = true);
+
+                              try {
+                                final feedbackDocId =
+                                    widget.feedback['docId']?.toString() ?? '';
+                                final displayDept = selectedDepartment!.trim();
+
+                                if (feedbackDocId.isEmpty) {
+                                  throw Exception(
+                                      "Invalid feedback document ID.");
+                                }
+
+                                final storedDept = deptMap[displayDept] ??
+                                    displayDept
+                                        .toLowerCase()
+                                        .replaceAll(RegExp(r'[^a-z0-9]+'), '_');
+
+                                await FirebaseFirestore.instance
+                                    .collection('feedback')
+                                    .doc(feedbackDocId)
+                                    .update({
+                                  'department': storedDept,
+                                  'status': 'transferred',
+                                  'transferredAt': FieldValue.serverTimestamp(),
+                                });
+
+                                await widget.onRefresh();
+
+                                if (mounted) {
+                                  Navigator.pop(innerContext);
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        "Department changed to $displayDept.",
+                                        style: GoogleFonts.poppins(
+                                            color: Colors.white),
+                                      ),
+                                      backgroundColor: primarycolor,
+                                      behavior: SnackBarBehavior.floating,
+                                      margin: const EdgeInsets.all(16),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      duration: const Duration(seconds: 2),
+                                    ),
+                                  );
+                                }
+                              } catch (e) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      "Failed to update department: $e",
+                                      style: GoogleFonts.poppins(
+                                          color: Colors.white),
+                                    ),
+                                    backgroundColor: Colors.red,
+                                    behavior: SnackBarBehavior.floating,
+                                    margin: const EdgeInsets.all(16),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    duration: const Duration(seconds: 2),
+                                  ),
+                                );
+                              } finally {
+                                setInnerState(() => modalLoading = false);
+                              }
+                            },
+                  child: modalLoading
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
+                        )
+                      : Text("Change Department"),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ElevatedButton.icon(
+      onPressed: isLoading
+          ? null
+          : () async {
+              setState(() => isLoading = true);
+              await _showDepartmentDialog(context);
+              setState(() => isLoading = false);
+            },
+      icon: isLoading
+          ? const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: Colors.white),
+            )
+          : const Icon(Icons.send, size: 16),
+      label: Text("Send to Admin", style: GoogleFonts.poppins(fontSize: 12)),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: primarycolor,
+        foregroundColor: Colors.white,
+        textStyle: GoogleFonts.poppins(fontWeight: FontWeight.bold),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
       ),
     );
   }
@@ -1201,20 +1164,18 @@ class _StatCardState extends State<StatCard> {
           children: [
             Text(
               widget.value,
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 fontSize: 24,
                 fontWeight: FontWeight.bold,
                 color: widget.color,
-                fontFamily: 'Poppins',
               ),
             ),
             const SizedBox(height: 4),
             Text(
               widget.title,
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 fontSize: 14,
                 color: widget.color.withOpacity(0.9),
-                fontFamily: 'Poppins',
               ),
             ),
           ],
@@ -1232,10 +1193,10 @@ class SearchBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return TextField(
       controller: controller,
-      style: const TextStyle(fontFamily: 'Poppins', color: dark),
+      style: GoogleFonts.poppins(color: dark),
       decoration: InputDecoration(
-        hintText: 'Search user...',
-        hintStyle: const TextStyle(color: dark),
+        hintText: 'Search feedback or user...',
+        hintStyle: GoogleFonts.poppins(color: textdark),
         prefixIcon: const Icon(Icons.search, color: primarycolor),
         filled: true,
         fillColor: Colors.white,
@@ -1249,7 +1210,7 @@ class SearchBar extends StatelessWidget {
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
-          borderSide: const BorderSide(color: dark),
+          borderSide: const BorderSide(color: textdark),
         ),
       ),
     );
@@ -1272,7 +1233,7 @@ class FilterDropdown extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: BoxDecoration(
         color: Colors.white,
-        border: Border.all(color: dark, width: 1.2),
+        border: Border.all(color: textdark, width: 1.2),
         borderRadius: BorderRadius.circular(14),
       ),
       child: DropdownButtonHideUnderline(
@@ -1280,7 +1241,7 @@ class FilterDropdown extends StatelessWidget {
           value: selectedFilter,
           onChanged: onChanged,
           dropdownColor: lightBackground,
-          style: const TextStyle(fontFamily: 'Poppins', color: dark),
+          style: GoogleFonts.poppins(color: dark),
           icon: const Icon(Icons.filter_list, color: primarycolordark),
           items: ['All', 'Positive', 'Negative'].map((filter) {
             return DropdownMenuItem<String>(
@@ -1288,14 +1249,10 @@ class FilterDropdown extends StatelessWidget {
               child: MouseRegion(
                 cursor: SystemMouseCursors.click,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 8,
-                    horizontal: 4,
-                  ),
-                  child: Text(
-                    filter,
-                    style: const TextStyle(fontFamily: 'Poppins', color: dark),
-                  ),
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                  child:
+                      Text(filter, style: GoogleFonts.poppins(color: dark)),
                 ),
               ),
             );
@@ -1342,10 +1299,10 @@ class _HoverButtonState extends State<HoverButton> {
           duration: const Duration(milliseconds: 130),
           decoration: BoxDecoration(
             color: widget.isActive
-                ? primarycolor.withOpacity(0.25) // Active highlight
+                ? primarycolor.withOpacity(0.25)
                 : (isHovered
-                      ? primarycolor.withOpacity(0.10) // Hover highlight
-                      : Colors.transparent),
+                    ? primarycolor.withOpacity(0.10)
+                    : Colors.transparent),
             borderRadius: BorderRadius.circular(10),
           ),
           child: ListTile(
@@ -1357,12 +1314,12 @@ class _HoverButtonState extends State<HoverButton> {
             ),
             title: Text(
               widget.label ?? '',
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 color: widget.isActive
                     ? primarycolordark
                     : (widget.isLogout ? Colors.red : primarycolordark),
-                fontWeight: widget.isActive ? FontWeight.bold : FontWeight.w600,
-                fontFamily: 'Poppins',
+                fontWeight:
+                    widget.isActive ? FontWeight.bold : FontWeight.w600,
               ),
             ),
             onTap: widget.onPressed,
@@ -1382,10 +1339,7 @@ class _HoverButtonState extends State<HoverButton> {
           child: TextButton(
             style: TextButton.styleFrom(
               foregroundColor: primarycolordark,
-              textStyle: const TextStyle(
-                fontFamily: 'Poppins',
-                fontWeight: FontWeight.w600,
-              ),
+              textStyle: GoogleFonts.poppins(fontWeight: FontWeight.w600),
             ),
             onPressed: widget.onPressed,
             child: widget.child ?? const SizedBox(),
@@ -1398,7 +1352,7 @@ class _HoverButtonState extends State<HoverButton> {
 
 class NavigationDrawer extends StatelessWidget {
   final String? applicationLogoUrl;
-  final String activePage; // holds current active page name
+  final String activePage;
 
   const NavigationDrawer({
     super.key,
@@ -1415,28 +1369,20 @@ class NavigationDrawer extends StatelessWidget {
           DrawerHeader(
             decoration: const BoxDecoration(color: lightBackground),
             child: Center(
-              child:
-                  applicationLogoUrl != null && applicationLogoUrl!.isNotEmpty
+              child: applicationLogoUrl != null &&
+                      applicationLogoUrl!.isNotEmpty
                   ? Image.network(
                       applicationLogoUrl!,
                       height: double.infinity,
                       fit: BoxFit.contain,
-                      errorBuilder: (context, error, stackTrace) => Image.asset(
-                        'assets/images/dhvbot.png',
-                        height: double.infinity,
-                        fit: BoxFit.contain,
-                      ),
+                      errorBuilder: (context, error, stackTrace) =>
+                          Image.asset('assets/images/dhvbot.png'),
                     )
-                  : Image.asset(
-                      'assets/images/dhvbot.png',
-                      height: double.infinity,
-                      fit: BoxFit.contain,
-                    ),
+                  : Image.asset('assets/images/dhvbot.png'),
             ),
           ),
           _drawerItem(context, Icons.dashboard_outlined, "Dashboard", () {
-            Navigator.pop(context);
-            Navigator.push(
+            Navigator.pushReplacement(
               context,
               MaterialPageRoute(
                 builder: (_) => const SuperAdminDashboardPage(),
@@ -1444,59 +1390,68 @@ class NavigationDrawer extends StatelessWidget {
             );
           }),
           _drawerItem(context, Icons.people_outline, "Users Info", () {
-            Navigator.pop(context);
-            Navigator.push(
+            Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (_) => const UserinfoPage()),
             );
           }),
-          _drawerItem(context, Icons.chat_outlined, "Chat Logs", () {
-            Navigator.pop(context);
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const ChatsPage()),
-            );
-          }),
           _drawerItem(context, Icons.feedback_outlined, "Feedbacks", () {
-            Navigator.pop(context);
-            Navigator.push(
+            Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (_) => const FeedbacksPage()),
             );
           }),
-          _drawerItem(
-            context,
-            Icons.admin_panel_settings_outlined,
-            "Admin Management",
-            () {
-              Navigator.pop(context);
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const AdminManagementPage()),
-              );
-            },
-          ),
-          _drawerItem(context, Icons.receipt_long_outlined, "Audit Logs", () {
-            Navigator.pop(context);
-            Navigator.push(
+          _drawerItem(context, Icons.admin_panel_settings_outlined,
+              "Admin Management", () {
+            Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (_) => const AuditLogsPage()),
+              MaterialPageRoute(builder: (_) => const AdminManagementPage()),
             );
           }),
+          // _drawerItem(
+          //     context, Icons.warning_amber_rounded, "Emergency Requests", () {
+          //   Navigator.pop(context);
+          //   Navigator.push(
+          //     context,
+          //     MaterialPageRoute(builder: (_) => const EmergencyRequestsPage()),
+          //   );
+          // }),
           _drawerItem(context, Icons.settings_outlined, "Settings", () {
-            Navigator.pop(context);
-            Navigator.push(
+            Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (_) => const SystemSettingsPage()),
             );
           }),
-          const Spacer(),
-          _drawerItem(context, Icons.logout, "Logout", () {
+          _drawerItem(context, Icons.receipt_long_outlined, "Audit Logs", () {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (_) => const AdminLoginPage()),
+              MaterialPageRoute(builder: (_) => const AuditLogsPage()),
             );
-          }, isLogout: true),
+          }),
+          const Spacer(),
+          _drawerItem(
+            context,
+            Icons.logout,
+            "Logout",
+            () async {
+              try {
+                await FirebaseAuth.instance.signOut();
+                Navigator.pushAndRemoveUntil(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AdminLoginPage()),
+                  (route) => false,
+                );
+              } catch (e) {
+                print("Logout error: $e");
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                      content: Text("Logout failed. Please try again.",
+                          style: GoogleFonts.poppins())),
+                );
+              }
+            },
+            isLogout: true,
+          ),
         ],
       ),
     );

@@ -19,6 +19,8 @@ dependencies:
   google_fonts: ^6.1.0
   firebase_core: ^2.32.0
   firebase_auth: ^4.17.9
+  flutter_secure_storage: ^9.0.0
+  encrypt: ^5.0.1
   firebase_analytics: ^10.10.7
   firebase_storage: ^11.6.10
   cloud_firestore: ^4.17.5
@@ -34,6 +36,7 @@ dependencies:
   mime: ^1.0.4
   path: ^1.8.3
   http_parser: ^4.0.2
+  cloud_functions: ^4.0.0
 
 dev_dependencies:
   flutter_test:
@@ -63,6 +66,8 @@ flutter:
     - assets/animations/Loading Spinner (Dots).json
     - assets/images/web-search.png
     - assets/images/no-data.png
+    - assets/images/pass_reset.png
+    - assets/animations/Error 404.json
 
 
 

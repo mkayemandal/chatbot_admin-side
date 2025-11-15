@@ -1,7 +1,12 @@
+import 'dart:convert';
+import 'package:encrypt/encrypt.dart' as encrypt;
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:lottie/lottie.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:chatbot/superadmin/editprofile.dart';
 import 'package:chatbot/superadmin/settings.dart';
 import 'package:chatbot/superadmin/auditlogs.dart';
@@ -11,6 +16,7 @@ import 'package:chatbot/superadmin/userinfo.dart';
 import 'package:chatbot/superadmin/adminmanagement.dart';
 import 'package:chatbot/superadmin/feedbacks.dart';
 import 'package:chatbot/adminlogin.dart';
+import 'package:chatbot/superadmin/emergencypage.dart';
 
 const primarycolor = Color(0xFFffc803);
 const primarycolordark = Color(0xFF550100);
@@ -54,6 +60,9 @@ class _ProfileButtonState extends State<ProfileButton> {
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isSmallScreen = screenWidth < 600;
+
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => isHovered = true),
@@ -72,41 +81,47 @@ class _ProfileButtonState extends State<ProfileButton> {
                 : Colors.transparent,
             borderRadius: BorderRadius.circular(15),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircleAvatar(
-                radius: 18,
-                backgroundImage: widget.imageUrl.startsWith('http')
-                    ? NetworkImage(widget.imageUrl)
-                    : AssetImage(widget.imageUrl) as ImageProvider,
-                backgroundColor: Colors.grey[200],
-              ),
-              const SizedBox(width: 10),
-              Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.name,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: dark,
-                      fontFamily: 'Poppins',
+          child: isSmallScreen
+              ? CircleAvatar(
+                  radius: 18,
+                  backgroundImage: widget.imageUrl.startsWith('http')
+                      ? NetworkImage(widget.imageUrl)
+                      : AssetImage(widget.imageUrl) as ImageProvider,
+                  backgroundColor: Colors.grey[200],
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircleAvatar(
+                      radius: 18,
+                      backgroundImage: widget.imageUrl.startsWith('http')
+                          ? NetworkImage(widget.imageUrl)
+                          : AssetImage(widget.imageUrl) as ImageProvider,
+                      backgroundColor: Colors.grey[200],
                     ),
-                  ),
-                  Text(
-                    widget.role,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: dark,
-                      fontFamily: 'Poppins',
+                    const SizedBox(width: 10),
+                    Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.name,
+                          style: GoogleFonts.poppins(
+                            fontWeight: FontWeight.bold,
+                            color: dark,
+                          ),
+                        ),
+                        Text(
+                          widget.role,
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            color: dark,
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
-            ],
-          ),
+                  ],
+                ),
         ),
       ),
     );
@@ -114,7 +129,7 @@ class _ProfileButtonState extends State<ProfileButton> {
 }
 
 class AdminProfilePage extends StatefulWidget {
-  final String? updatedProfileUrl; // ✅ for image update after edit
+  final String? updatedProfileUrl;
   const AdminProfilePage({super.key, this.updatedProfileUrl});
 
   @override
@@ -135,6 +150,10 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
   bool _logoLoaded = false;
   bool _adminInfoLoaded = false;
 
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  static const String _aesKeyStorageKey = 'app_aes_key_v1';
+  encrypt.Key? _cachedKey;
+
   @override
   void initState() {
     super.initState();
@@ -142,7 +161,6 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
     _loadApplicationLogo();
   }
 
-  // Reload data when coming back to this page
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -157,7 +175,21 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
           .doc(user.uid)
           .get();
       if (doc.exists) {
+        final data = doc.data()!;
+        
+        // ✅ Decrypt email on refresh
+        final encryptedEmail = data['email'] ?? '';
+        String decryptedEmail = email; 
+        
+        if (encryptedEmail.isNotEmpty) {
+          final result = await _decryptValue(encryptedEmail);
+          if (result != null) {
+            decryptedEmail = result;
+          }
+        }
+        
         setState(() {
+          email = decryptedEmail;
           _profileImageUrl = doc['profileImageUrl'] ?? _profileImageUrl;
         });
       }
@@ -177,17 +209,95 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
           _logoLoaded = true;
         });
       } else {
-        setState(() {
-          _applicationLogoUrl = null;
-          _logoLoaded = true;
-        });
+        _logoLoaded = true;
       }
     } catch (e) {
       print('Error loading application logo: $e');
-      setState(() {
-        _applicationLogoUrl = null;
-        _logoLoaded = true;
-      });
+      _logoLoaded = true;
+    }
+  }
+
+  Future<encrypt.Key> _getOrCreateAesKey() async {
+    if (_cachedKey != null) return _cachedKey!;
+    
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('SystemSettings')
+          .doc('encryption_key')
+          .get();
+      
+      if (doc.exists && doc.data()?['key'] != null) {
+        final keyBase64 = doc.data()!['key'] as String;
+        final keyBytes = base64Decode(keyBase64);
+        
+        await _secureStorage.write(
+          key: _aesKeyStorageKey,
+          value: keyBase64,
+          aOptions: const AndroidOptions(encryptedSharedPreferences: true),
+          iOptions: const IOSOptions(),
+        );
+        
+        _cachedKey = encrypt.Key(keyBytes);
+        print('✅ Profile: Loaded encryption key from Firestore');
+        return _cachedKey!;
+      }
+    } catch (e) {
+      print('⚠️ Profile: Error loading key from Firestore: $e');
+    }
+    
+    final existing = await _secureStorage.read(key: _aesKeyStorageKey);
+    if (existing != null) {
+      final bytes = base64Decode(existing);
+      _cachedKey = encrypt.Key(bytes);
+      print('✅ Profile: Loaded encryption key from local storage');
+      return _cachedKey!;
+    }
+    
+    print('❌ Profile: No encryption key found!');
+    throw Exception('No encryption key found. Please re-register.');
+  }
+
+  Future<String?> _decryptValue(String encoded) async {
+    if (encoded.isEmpty) {
+      print('⚠️ Profile: Empty encoded value');
+      return null;
+    }
+    
+    if (!encoded.contains('+') && !encoded.contains('/') && !encoded.contains('=')) {
+      print('⚠️ Profile: Value appears to be plaintext');
+      return encoded;
+    }
+    
+    try {
+      final key = await _getOrCreateAesKey();
+      final combined = base64Decode(encoded);
+      
+      if (combined.length < 17) {
+        print('❌ Profile: Data too short: ${combined.length} bytes');
+        return null;
+      }
+      
+      final ivBytes = combined.sublist(0, 16);
+      final cipherBytes = combined.sublist(16);
+      final iv = encrypt.IV(ivBytes);
+      final encrypter = encrypt.Encrypter(
+        encrypt.AES(key, mode: encrypt.AESMode.cbc)
+      );
+      final encrypted = encrypt.Encrypted(cipherBytes);
+      
+      final decrypted = encrypter.decrypt(encrypted, iv: iv);
+      print('✅ Profile: Decryption successful');
+      return decrypted;
+    } catch (e, stackTrace) {
+      print('❌ Profile: Decryption error: $e');
+      print('Stack trace: ${stackTrace.toString().split('\n').take(3).join('\n')}');
+      
+      if (encoded.contains('@')) {
+        print('⚠️ Profile: Encoded value contains @, returning as plaintext');
+        return encoded;
+      }
+      
+      return 'Email unavailable';
     }
   }
 
@@ -202,30 +312,57 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
 
         if (doc.exists) {
           final data = doc.data()!;
+          
+          final encryptedEmail = data['email'] ?? '';
+          String decryptedEmail = 'Loading...';
+          
+          if (encryptedEmail.isNotEmpty) {
+            final result = await _decryptValue(encryptedEmail);
+            decryptedEmail = result ?? 'Email unavailable';
+          }
+          
+          print('👤 SuperAdmin Profile: ${data['firstName']} - Email: $decryptedEmail');
+          
           setState(() {
             firstName = capitalizeEachWord(data['firstName'] ?? '');
             lastName = capitalizeEachWord(data['lastName'] ?? '');
-            email = data['email'] ?? '';
+            email = decryptedEmail; // ✅ Use decrypted email
             userType = capitalizeEachWord(data['userType'] ?? 'Super Admin');
-            birthday = data['birthday'] ?? '';
+            birthday = _formatBirthday(data['birthday']);
             gender = data['gender'] ?? '';
             staffID = data['staffID']?.toString() ?? '';
             _profileImageUrl =
                 widget.updatedProfileUrl ??
                 data['profileImageUrl'] ??
                 data['profilePicture'];
-
             _adminInfoLoaded = true;
           });
         } else {
-          setState(() => _adminInfoLoaded = true);
+          setState(() {
+            _adminInfoLoaded = true;
+          });
         }
       } else {
-        setState(() => _adminInfoLoaded = true);
+        setState(() {
+          _adminInfoLoaded = true;
+        });
       }
     } catch (e) {
-      print('Error fetching Super Admin info: $e');
-      setState(() => _adminInfoLoaded = true);
+      print('❌ Error fetching Super Admin info: $e');
+      setState(() {
+        _adminInfoLoaded = true;
+      });
+    }
+  }
+
+  String _formatBirthday(String? rawDate) {
+    if (rawDate == null || rawDate.trim().isEmpty) return '';
+    try {
+      final parsed = DateFormat('MM/dd/yyyy').parse(rawDate.trim());
+      // Convert to desired display format
+      return DateFormat('MMMM d, yyyy').format(parsed);
+    } catch (e) {
+      return rawDate;
     }
   }
 
@@ -258,15 +395,14 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
         iconTheme: const IconThemeData(color: primarycolordark),
         elevation: 0,
         titleSpacing: 0,
-        title: const Row(
+        title: Row(
           children: [
-            SizedBox(width: 12),
+            const SizedBox(width: 12),
             Text(
               "Your Profile",
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 color: primarycolordark,
                 fontWeight: FontWeight.bold,
-                fontFamily: 'Poppins',
               ),
             ),
           ],
@@ -284,7 +420,7 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
         ],
       ),
       body: RefreshIndicator(
-        onRefresh: _refreshProfile, // ✅ pull to refresh
+        onRefresh: _refreshProfile,
         child: SingleChildScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(16),
@@ -296,56 +432,7 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
             elevation: 3,
             child: Column(
               children: [
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 24,
-                    vertical: 24,
-                  ),
-                  decoration: const BoxDecoration(
-                    color: primarycolordark,
-                    borderRadius: BorderRadius.only(
-                      topLeft: Radius.circular(16),
-                      topRight: Radius.circular(16),
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      CircleAvatar(
-                        radius: 40,
-                        backgroundImage:
-                            _profileImageUrl != null &&
-                                _profileImageUrl!.isNotEmpty
-                            ? NetworkImage(_profileImageUrl!)
-                            : const AssetImage('assets/images/defaultDP.jpg')
-                                  as ImageProvider,
-                      ),
-                      const SizedBox(width: 16),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            fullName.isNotEmpty ? fullName : 'Loading...',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold,
-                              fontFamily: 'Poppins',
-                            ),
-                          ),
-                          Text(
-                            email,
-                            style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 14,
-                              fontFamily: 'Poppins',
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
+                _header(fullName),
                 Padding(
                   padding: const EdgeInsets.all(16),
                   child: isWideScreen
@@ -375,6 +462,53 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
     );
   }
 
+  Widget _header(String fullName) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+      decoration: const BoxDecoration(
+        color: primarycolordark,
+        borderRadius: BorderRadius.only(
+          topLeft: Radius.circular(16),
+          topRight: Radius.circular(16),
+        ),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 40,
+            backgroundImage:
+                _profileImageUrl != null && _profileImageUrl!.isNotEmpty
+                    ? NetworkImage(_profileImageUrl!)
+                    : const AssetImage('assets/images/defaultDP.jpg')
+                        as ImageProvider,
+          ),
+          const SizedBox(width: 16),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                fullName.isNotEmpty ? fullName : 'Loading...',
+                style: GoogleFonts.poppins(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              Text(
+                email,
+                style: GoogleFonts.poppins(
+                  color: Colors.white70,
+                  fontSize: 14,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _leftCard(String fullName) {
     return Card(
       color: Colors.white,
@@ -392,13 +526,12 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
                 topRight: Radius.circular(12),
               ),
             ),
-            child: const Text(
+            child: Text(
               'Personal Picture',
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 color: Colors.white,
                 fontSize: 16,
                 fontWeight: FontWeight.bold,
-                fontFamily: 'Poppins',
               ),
               textAlign: TextAlign.center,
             ),
@@ -411,37 +544,41 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
                   radius: 60,
                   backgroundImage:
                       _profileImageUrl != null && _profileImageUrl!.isNotEmpty
-                      ? NetworkImage(_profileImageUrl!)
-                      : const AssetImage('assets/images/defaultDP.jpg')
-                            as ImageProvider,
+                          ? NetworkImage(_profileImageUrl!)
+                          : const AssetImage('assets/images/defaultDP.jpg')
+                              as ImageProvider,
                 ),
                 const SizedBox(height: 12),
                 Text(
                   fullName,
-                  style: const TextStyle(
+                  style: GoogleFonts.poppins(
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
-                    fontFamily: 'Poppins',
                     color: dark,
                   ),
                 ),
-                const Text(
+                Text(
                   'Super Admin',
-                  style: TextStyle(color: dark, fontFamily: 'Poppins'),
+                  style: GoogleFonts.poppins(color: dark),
                 ),
                 const SizedBox(height: 16),
                 ElevatedButton.icon(
                   onPressed: () async {
                     final updatedUrl = await Navigator.push(
                       context,
-                      MaterialPageRoute(builder: (_) => EditAdminProfilePage()),
+                      MaterialPageRoute(
+                        builder: (_) => EditAdminProfilePage(),
+                      ),
                     );
                     if (updatedUrl != null && updatedUrl is String) {
                       setState(() => _profileImageUrl = updatedUrl);
                     }
                   },
                   icon: const Icon(Icons.edit, color: Colors.white),
-                  label: const Text("Edit Profile"),
+                  label: Text(
+                    "Edit Profile",
+                    style: GoogleFonts.poppins(),
+                  ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: primarycolor,
                     foregroundColor: Colors.white,
@@ -449,7 +586,6 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
                       horizontal: 20,
                       vertical: 12,
                     ),
-                    textStyle: const TextStyle(fontFamily: 'Poppins'),
                   ),
                 ),
               ],
@@ -477,13 +613,12 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
                 topRight: Radius.circular(12),
               ),
             ),
-            child: const Text(
+            child: Text(
               'Personal Information',
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 color: Colors.white,
                 fontSize: 16,
                 fontWeight: FontWeight.bold,
-                fontFamily: 'Poppins',
               ),
               textAlign: TextAlign.center,
             ),
@@ -493,40 +628,29 @@ class _AdminProfilePageState extends State<AdminProfilePage> {
             child: Column(
               children: [
                 InfoRow(
-                  label: "Staff ID",
-                  value: staffID,
-                  icon: Icons.badge_outlined,
-                ),
+                    label: "Staff ID", value: staffID, icon: Icons.badge_outlined),
                 InfoRow(
-                  label: "First Name",
-                  value: firstName,
-                  icon: Icons.person_outline,
-                ),
+                    label: "First Name",
+                    value: firstName,
+                    icon: Icons.person_outline),
                 InfoRow(
-                  label: "Last Name",
-                  value: lastName,
-                  icon: Icons.person_outline,
-                ),
+                    label: "Last Name",
+                    value: lastName,
+                    icon: Icons.person_outline),
                 InfoRow(
-                  label: "Email",
-                  value: email,
-                  icon: Icons.email_outlined,
-                ),
+                    label: "Email", value: email, icon: Icons.email_outlined),
                 InfoRow(
-                  label: "Birthday",
-                  value: birthday,
-                  icon: Icons.cake_outlined,
-                ),
+                    label: "Birthday",
+                    value: birthday,
+                    icon: Icons.cake_outlined),
                 InfoRow(
-                  label: "Gender",
-                  value: gender,
-                  icon: _getGenderIcon(gender),
-                ),
+                    label: "Gender",
+                    value: gender,
+                    icon: _getGenderIcon(gender)),
                 InfoRow(
-                  label: "Usertype",
-                  value: userType,
-                  icon: Icons.security_outlined,
-                ),
+                    label: "Usertype",
+                    value: userType,
+                    icon: Icons.security_outlined),
               ],
             ),
           ),
@@ -573,9 +697,8 @@ class InfoRow extends StatelessWidget {
             flex: 2,
             child: Text(
               label,
-              style: const TextStyle(
+              style: GoogleFonts.poppins(
                 fontWeight: FontWeight.w600,
-                fontFamily: 'Poppins',
                 color: dark,
               ),
             ),
@@ -584,7 +707,7 @@ class InfoRow extends StatelessWidget {
             flex: 3,
             child: Text(
               value,
-              style: const TextStyle(fontFamily: 'Poppins', color: dark),
+              style: GoogleFonts.poppins(color: dark),
             ),
           ),
         ],
@@ -631,8 +754,8 @@ class _HoverButtonState extends State<HoverButton> {
             color: widget.isActive
                 ? primarycolor.withOpacity(0.25)
                 : (isHovered
-                      ? primarycolor.withOpacity(0.10)
-                      : Colors.transparent),
+                    ? primarycolor.withOpacity(0.10)
+                    : Colors.transparent),
             borderRadius: BorderRadius.circular(10),
           ),
           child: ListTile(
@@ -644,12 +767,11 @@ class _HoverButtonState extends State<HoverButton> {
             ),
             title: Text(
               widget.label ?? '',
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 color: widget.isActive
                     ? primarycolordark
                     : (widget.isLogout ? Colors.red : primarycolordark),
                 fontWeight: widget.isActive ? FontWeight.bold : FontWeight.w600,
-                fontFamily: 'Poppins',
               ),
             ),
             onTap: widget.onPressed,
@@ -663,16 +785,12 @@ class _HoverButtonState extends State<HoverButton> {
         cursor: SystemMouseCursors.click,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 130),
-          transform: isHovered
-              ? (Matrix4.identity()..scale(1.07))
-              : Matrix4.identity(),
+          transform:
+              isHovered ? (Matrix4.identity()..scale(1.07)) : Matrix4.identity(),
           child: TextButton(
             style: TextButton.styleFrom(
               foregroundColor: primarycolordark,
-              textStyle: const TextStyle(
-                fontFamily: 'Poppins',
-                fontWeight: FontWeight.w600,
-              ),
+              textStyle: GoogleFonts.poppins(fontWeight: FontWeight.w600),
             ),
             onPressed: widget.onPressed,
             child: widget.child ?? const SizedBox(),
@@ -702,8 +820,7 @@ class NavigationDrawer extends StatelessWidget {
           DrawerHeader(
             decoration: const BoxDecoration(color: lightBackground),
             child: Center(
-              child:
-                  applicationLogoUrl != null && applicationLogoUrl!.isNotEmpty
+              child: applicationLogoUrl != null && applicationLogoUrl!.isNotEmpty
                   ? Image.network(
                       applicationLogoUrl!,
                       height: double.infinity,
@@ -728,48 +845,69 @@ class NavigationDrawer extends StatelessWidget {
               MaterialPageRoute(builder: (_) => const UserinfoPage()),
             );
           }),
-          _drawerItem(context, Icons.chat_outlined, "Chat Logs", () {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (_) => const ChatsPage()),
-            );
-          }),
+          // _drawerItem(context, Icons.chat_outlined, "Chat Logs", () {
+          //   Navigator.pushReplacement(
+          //     context,
+          //     MaterialPageRoute(builder: (_) => const ChatsPage()),
+          //   );
+          // }),
           _drawerItem(context, Icons.feedback_outlined, "Feedbacks", () {
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (_) => const FeedbacksPage()),
             );
           }),
-          _drawerItem(
-            context,
-            Icons.admin_panel_settings_outlined,
-            "Admin Management",
-            () {
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(builder: (_) => const AdminManagementPage()),
-              );
-            },
-          ),
-          _drawerItem(context, Icons.receipt_long_outlined, "Audit Logs", () {
+          _drawerItem(context, Icons.admin_panel_settings_outlined,
+              "Admin Management", () {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (_) => const AuditLogsPage()),
+              MaterialPageRoute(builder: (_) => const AdminManagementPage()),
             );
           }),
+          // _drawerItem(context, Icons.warning_amber_rounded,
+          //     "Emergency Requests", () {
+          //   Navigator.pop(context);
+          //   Navigator.push(
+          //     context,
+          //     MaterialPageRoute(builder: (_) => const EmergencyRequestsPage()),
+          //   );
+          // }),
           _drawerItem(context, Icons.settings_outlined, "Settings", () {
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (_) => const SystemSettingsPage()),
             );
           }),
-          const Spacer(),
-          _drawerItem(context, Icons.logout, "Logout", () {
+          _drawerItem(context, Icons.receipt_long_outlined, "Audit Logs", () {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (_) => const AdminLoginPage()),
+              MaterialPageRoute(builder: (_) => const AuditLogsPage()),
             );
-          }, isLogout: true),
+          }),
+          const Spacer(),
+          _drawerItem(
+            context,
+            Icons.logout,
+            "Logout",
+            () async {
+              try {
+                await FirebaseAuth.instance.signOut();
+                Navigator.pushAndRemoveUntil(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AdminLoginPage()),
+                  (route) => false,
+                );
+              } catch (e) {
+                print("Logout error: $e");
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                      content:
+                          Text("Logout failed. Please try again.", style: GoogleFonts.poppins())),
+                );
+              }
+            },
+            isLogout: true,
+          ),
         ],
       ),
     );

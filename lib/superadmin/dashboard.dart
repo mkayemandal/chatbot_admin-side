@@ -1,3 +1,4 @@
+import 'package:intl/intl.dart';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:lottie/lottie.dart';
@@ -10,7 +11,9 @@ import 'package:chatbot/superadmin/feedbacks.dart';
 import 'package:chatbot/superadmin/settings.dart';
 import 'package:chatbot/superadmin/userinfo.dart';
 import 'package:chatbot/superadmin/profile.dart';
+import 'package:chatbot/superadmin/emergencypage.dart';
 import 'package:chatbot/adminlogin.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 const primarycolor = Color(0xFFffc803);
 const primarycolordark = Color(0xFF550100);
@@ -55,6 +58,9 @@ class _ProfileButtonState extends State<ProfileButton> {
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isSmallScreen = screenWidth < 600;
+
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => isHovered = true),
@@ -68,46 +74,50 @@ class _ProfileButtonState extends State<ProfileButton> {
           margin: const EdgeInsets.only(right: 12),
           padding: const EdgeInsets.symmetric(horizontal: 14),
           decoration: BoxDecoration(
-            color: isHovered
-                ? Colors.grey.withOpacity(0.15)
-                : Colors.transparent,
+            color: isHovered ? Colors.grey.withOpacity(0.15) : Colors.transparent,
             borderRadius: BorderRadius.circular(15),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircleAvatar(
-                radius: 18,
-                backgroundImage: widget.imageUrl.startsWith('http')
-                    ? NetworkImage(widget.imageUrl)
-                    : AssetImage(widget.imageUrl) as ImageProvider,
-                backgroundColor: Colors.grey[200],
-              ),
-              const SizedBox(width: 10),
-              Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.name,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: dark,
-                      fontFamily: 'Poppins',
+          child: isSmallScreen
+              ? CircleAvatar(
+                  radius: 18,
+                  backgroundImage: widget.imageUrl.startsWith('http')
+                      ? NetworkImage(widget.imageUrl)
+                      : AssetImage(widget.imageUrl) as ImageProvider,
+                  backgroundColor: Colors.grey[200],
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircleAvatar(
+                      radius: 18,
+                      backgroundImage: widget.imageUrl.startsWith('http')
+                          ? NetworkImage(widget.imageUrl)
+                          : AssetImage(widget.imageUrl) as ImageProvider,
+                      backgroundColor: Colors.grey[200],
                     ),
-                  ),
-                  Text(
-                    widget.role,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: dark,
-                      fontFamily: 'Poppins',
+                    const SizedBox(width: 10),
+                    Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.name,
+                          style: GoogleFonts.poppins(
+                            fontWeight: FontWeight.bold,
+                            color: dark,
+                          ),
+                        ),
+                        Text(
+                          widget.role,
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            color: dark,
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
-            ],
-          ),
+                  ],
+                ),
         ),
       ),
     );
@@ -142,12 +152,16 @@ class _SuperAdminDashboardPageState extends State<SuperAdminDashboardPage> {
   List<Map<String, dynamic>> latestFeedbacks = [];
   List<BarChartGroupData> barGroups = [];
 
+  bool _topOfficesLoaded = false;
+  List<Map<String, dynamic>> topOfficeChats = [];
+
   bool get _allDataLoaded =>
       !_isLoading &&
       _recentChatsLoaded &&
       _feedbacksLoaded &&
       _barChartLoaded &&
-      _logoLoaded;
+      _logoLoaded &&
+      _topOfficesLoaded;
 
   @override
   void initState() {
@@ -165,6 +179,7 @@ class _SuperAdminDashboardPageState extends State<SuperAdminDashboardPage> {
         _fetchRecentChats(),
         _fetchLatestFeedbacks(),
         _fetchMonthlyChatCounts(),
+        _fetchTopOfficesByChatCounts(),
       ]);
     } catch (e) {
       print("Error loading dashboard data: $e");
@@ -205,35 +220,81 @@ class _SuperAdminDashboardPageState extends State<SuperAdminDashboardPage> {
   Future<Map<String, dynamic>> fetchStatCounts() async {
     final firestore = FirebaseFirestore.instance;
 
-    final usersSnapshot = await firestore.collection('users').get();
-    int registeredUsersCount = usersSnapshot.docs.length;
+    try {
+      // Registered users
+      final usersSnapshot = await firestore.collection('users').get();
+      int registeredUsersCount = usersSnapshot.docs.length;
 
-    final csvSnapshot = await firestore.collection('CsvData').get();
-    int registeredInfoCount = 0;
-    for (var doc in csvSnapshot.docs) {
-      final data = doc.data();
-      if (data.containsKey('data') && data['data'] is List) {
-        registeredInfoCount += (data['data'] as List).length;
+      // Registered information (CsvData)
+      final csvSnapshot = await firestore.collection('CsvData').get();
+      int registeredInfoCount = 0;
+      for (var doc in csvSnapshot.docs) {
+        final data = doc.data();
+        if (data.containsKey('data') && data['data'] is List) {
+          registeredInfoCount += (data['data'] as List).length;
+        }
       }
+
+      // Fetch all feedback documents (no department filtering here)
+      final feedbackSnapshot = await firestore.collection('feedback').get();
+
+      // Count only admin-department feedbacks for the 'totalFeedback' stat (preserve previous behavior)
+      int totalFeedbackCount = feedbackSnapshot.docs.where((doc) {
+        final dept = (doc.data()['department'] ?? '').toString().toLowerCase();
+        return dept == 'admin';
+      }).length;
+
+      int totalPositiveFeedbackCount = 0;
+      int totalAllFeedbackCount = feedbackSnapshot.docs.length;
+
+      for (final doc in feedbackSnapshot.docs) {
+        final data = doc.data() as Map<String, dynamic>;
+
+        bool isPositive = false;
+
+        final dynamic isPos1 = data['isPositive'] ?? data['is_positive'];
+        if (isPos1 == true) isPositive = true;
+
+        if (!isPositive && data.containsKey('sentiment')) {
+          final s = (data['sentiment'] ?? '').toString().toLowerCase();
+          if (s.contains('positive') || s.contains('pos')) isPositive = true;
+        }
+
+        if (!isPositive) {
+          final dynamic rating = data['rating'] ?? data['score'] ?? data['rating_value'];
+          if (rating != null) {
+            if (rating is num) {
+              if (rating >= 4) isPositive = true;
+            } else {
+              // try parse string
+              final parsed = double.tryParse(rating.toString());
+              if (parsed != null && parsed >= 4) isPositive = true;
+            }
+          }
+        }
+
+        if (isPositive) totalPositiveFeedbackCount++;
+      }
+
+      double satisfactionScore = totalAllFeedbackCount == 0
+          ? 0.0
+          : (totalPositiveFeedbackCount / totalAllFeedbackCount) * 5;
+
+      return {
+        'registeredUsers': registeredUsersCount,
+        'registeredInfo': registeredInfoCount,
+        'totalFeedback': totalFeedbackCount,
+        'userSatisfaction': '${satisfactionScore.toStringAsFixed(1)}/5',
+      };
+    } catch (e) {
+      print('Error fetching stat counts: $e');
+      return {
+        'registeredUsers': 0,
+        'registeredInfo': 0,
+        'totalFeedback': 0,
+        'userSatisfaction': '0.0/5',
+      };
     }
-
-    final feedbackSnapshot = await firestore.collection('Feedbacks').get();
-    int totalFeedbackCount = feedbackSnapshot.docs.length;
-    int positiveFeedbackCount = feedbackSnapshot.docs.where((doc) {
-      final sentiment = doc.data()['sentiment']?.toString().toLowerCase();
-      return sentiment == 'positive';
-    }).length;
-
-    double satisfactionScore = totalFeedbackCount == 0
-        ? 0.0
-        : (positiveFeedbackCount / totalFeedbackCount) * 5;
-
-    return {
-      'registeredUsers': registeredUsersCount,
-      'registeredInfo': registeredInfoCount,
-      'totalFeedback': totalFeedbackCount,
-      'userSatisfaction': '${satisfactionScore.toStringAsFixed(1)}/5',
-    };
   }
 
   Future<void> _loadSuperAdminInfo() async {
@@ -248,7 +309,6 @@ class _SuperAdminDashboardPageState extends State<SuperAdminDashboardPage> {
           setState(() {
             firstName = capitalizeEachWord(doc['firstName'] ?? '');
             lastName = capitalizeEachWord(doc['lastName'] ?? '');
-            // The following line fetches and updates the profilePictureUrl if it exists
             profilePictureUrl =
                 doc['profilePicture'] ?? "assets/images/defaultDP.jpg";
           });
@@ -261,9 +321,8 @@ class _SuperAdminDashboardPageState extends State<SuperAdminDashboardPage> {
 
   Future<void> _fetchRecentChats() async {
     try {
-      final usersSnapshot = await FirebaseFirestore.instance
-          .collection('users')
-          .get();
+      final usersSnapshot =
+          await FirebaseFirestore.instance.collection('users').get();
 
       List<Map<String, dynamic>> allChats = [];
 
@@ -311,28 +370,251 @@ class _SuperAdminDashboardPageState extends State<SuperAdminDashboardPage> {
     }
   }
 
-  Future<void> _fetchLatestFeedbacks() async {
+  String mapOfficeName(String raw) {
+    final s = raw.toString().trim();
+    if (s.isEmpty) return '';
+
+    String norm(String input) =>
+        input.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+
+    final Map<String, String> mapping = {
+      'AboutPSU': 'About PSU',
+      'RSO': 'Accredited RSO',
+      'Administrative': 'Administrative',
+      'CAS':'College of Arts and Sciences',
+      'CBAA':'College of Business Administration and Accountancy',
+      'CCS':'College of Computing Studies',
+      'COE':'College of Education',
+      'CEA':'College of Engineering and Architecture',
+      'CHTM':'College of Hospitality and Tourism Management',
+      'CIT':'College of Industrial Technology',
+      'MIS': 'Management Information Systems Office',
+      'COOP': 'Multipurpose Cooperative Office',
+      'Admission': 'Office Of Admission',
+      'OCA': 'Office Of Culture And The Arts',
+      'Registrar': 'Office Of Registrar',
+      'OSA': 'Office Of Student Affairs And Developemnt',
+      'OSWF': 'Office Of Student Welfare And Formation',
+    };
+
+    final Map<String, String> normMap = {
+      for (final entry in mapping.entries) norm(entry.key): entry.value
+    };
+
+    for (final entry in mapping.entries) {
+      normMap[norm(entry.value)] = entry.value;
+    }
+
+    final rawNorm = norm(s);
+
+    if (normMap.containsKey(rawNorm)) return normMap[rawNorm]!;
+
+    for (final key in normMap.keys) {
+      if (key.isEmpty) continue;
+      if (rawNorm.contains(key) || key.contains(rawNorm)) {
+        return normMap[key]!;
+      }
+    }
+
+    final tokens = s
+        .toLowerCase()
+        .split(RegExp(r'[^a-z0-9]+'))
+        .where((t) => t.isNotEmpty)
+        .toList();
+    for (final token in tokens) {
+      final tNorm = norm(token);
+      if (normMap.containsKey(tNorm)) return normMap[tNorm]!;
+      for (final key in normMap.keys) {
+        if (key.contains(tNorm) || tNorm.contains(key)) return normMap[key]!;
+      }
+    }
+
+    var cleaned =
+        s.replaceAll(RegExp(r'\boffice\b|\bof\b', caseSensitive: false), '')
+            .trim();
+    if (cleaned.isEmpty) cleaned = s;
+
+    return capitalizeEachWord(cleaned);
+  }
+
+  Future<void> _fetchTopOfficesByChatCounts() async {
     try {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('Feedbacks')
-          .orderBy('timestamp', descending: true)
-          .limit(5)
+      final Map<String, int> officeChatCounts = {};
+
+      final usersSnapshot =
+          await FirebaseFirestore.instance.collection('users').get();
+
+      for (var userDoc in usersSnapshot.docs) {
+        final userId = userDoc.id;
+        final conversationsSnapshot =
+            await userDoc.reference.collection('conversations').get();
+
+        for (var convoDoc in conversationsSnapshot.docs) {
+          final messagesSnapshot = await convoDoc.reference
+              .collection('messages')
+              .where('role', isEqualTo: 'user')
+              .get();
+
+          for (var msgDoc in messagesSnapshot.docs) {
+            final msgData = msgDoc.data();
+            final rawDept =
+                (msgData['office'] ?? msgData['department'] ?? '').toString().trim();
+            final depRaw = rawDept.toLowerCase();
+
+            if (depRaw.contains('admin') || depRaw.isEmpty) continue;
+
+            final officeName = mapOfficeName(rawDept);
+
+            if (officeName.isEmpty) continue;
+
+            officeChatCounts[officeName] =
+                (officeChatCounts[officeName] ?? 0) + 1;
+          }
+        }
+      }
+
+      final guestSnapshot = await FirebaseFirestore.instance
+          .collection('guest_conversations')
           .get();
 
+      for (var guestDoc in guestSnapshot.docs) {
+        final messagesSnapshot = await guestDoc.reference
+            .collection('messages')
+            .where('role', isEqualTo: 'user')
+            .get();
+        for (var msgDoc in messagesSnapshot.docs) {
+          final msgData = msgDoc.data();
+          final rawDept =
+              (msgData['office'] ?? msgData['department'] ?? '').toString().trim();
+          final depRaw = rawDept.toLowerCase();
+
+          if (depRaw.contains('admin') || depRaw.isEmpty) continue;
+
+          final officeName = mapOfficeName(rawDept);
+
+          if (officeName.isEmpty) continue;
+
+          officeChatCounts[officeName] =
+              (officeChatCounts[officeName] ?? 0) + 1;
+        }
+      }
+
+      final sortedOffices = officeChatCounts.entries
+          .where((e) => e.key.isNotEmpty)
+          .toList()
+        ..sort((a, b) => b.value.compareTo(a.value));
+
       setState(() {
-        latestFeedbacks = snapshot.docs.map((doc) {
-          final data = doc.data();
-          return {
-            'user': capitalizeEachWord(data['name'] ?? 'Unknown'),
-            'message': data['message'] ?? '',
-            'sentiment': data['sentiment'] ?? 'positive',
-          };
-        }).toList();
+        topOfficeChats = sortedOffices.take(5).map((entry) => {
+              'office': entry.key,
+              'chatCount': entry.value,
+            }).toList();
+        _topOfficesLoaded = true;
+      });
+    } catch (e, st) {
+      debugPrint('Error fetching top offices by chats: $e\n$st');
+      setState(() {
+        _topOfficesLoaded = true;
+        topOfficeChats = [];
+      });
+    }
+  }
+
+  Future<void> _fetchLatestFeedbacks() async {
+    try {
+      final firestore = FirebaseFirestore.instance;
+      debugPrint('Fetching latest feedbacks (superadmin dashboard)');
+
+      final feedbackSnapshot = await firestore
+          .collection('feedback')
+          .orderBy('timestamp', descending: true)
+          .limit(50)
+          .get();
+
+      String formatTimestamp(dynamic ts) {
+        try {
+          if (ts == null) return '';
+          if (ts is Timestamp) return DateFormat('MM-dd-yyyy h:mm a').format(ts.toDate());
+          if (ts is DateTime) return DateFormat('MM-dd-yyyy h:mm a').format(ts);
+          if (ts is int) return DateFormat('MM-dd-yyyy h:mm a').format(DateTime.fromMillisecondsSinceEpoch(ts));
+          return ts.toString();
+        } catch (e) {
+          return ts?.toString() ?? '';
+        }
+      }
+
+      final List<Map<String, dynamic>> mapped = [];
+
+      for (final doc in feedbackSnapshot.docs) {
+        final data = doc.data() as Map<String, dynamic>;
+
+        final deptRaw = (data['department'] ?? data['Department'] ?? '').toString().trim().toLowerCase();
+        if (deptRaw != 'admin') continue;
+
+        final rawName = (data['user_name'] ?? data['userName'] ?? data['user'] ?? '').toString().trim();
+        final rawEmail = (data['user_email'] ?? data['userEmail'] ?? data['email'] ?? '').toString().trim();
+        final uidRaw = (data['uid'] ?? data['userId'] ?? '').toString().trim();
+
+        final raw = data;
+        final explicitGuest = (raw['isGuest'] == true) || (raw['is_guest'] == true);
+        final uidIsGuest = uidRaw.startsWith('guest_');
+        final hasUserName = rawName.isNotEmpty;
+        final hasEmail = rawEmail.isNotEmpty;
+        final isGuest = explicitGuest || uidIsGuest || !(hasUserName || hasEmail || uidRaw.isNotEmpty);
+
+        String displayName;
+        if (isGuest) {
+          displayName = 'Guest User';
+        } else if (rawName.isNotEmpty) {
+          displayName = capitalizeEachWord(rawName);
+        } else if (rawEmail.isNotEmpty) {
+          displayName = rawEmail.split('@').first;
+        } else if (uidRaw.isNotEmpty) {
+          displayName = uidRaw;
+        } else {
+          displayName = 'Unknown User';
+        }
+
+        final isPositiveRaw = data['isPositive'] ?? data['is_positive'] ?? false;
+        final sentiment = (isPositiveRaw == true || isPositiveRaw.toString().toLowerCase() == 'true')
+            ? 'positive'
+            : 'negative';
+
+        final message = (data['feedbackComment'] ??
+                data['feedback_comment'] ??
+                data['message'] ??
+                data['feedback'] ??
+                '')
+            .toString();
+
+        final timestampDisplay = formatTimestamp(data['timestamp']);
+
+        mapped.add({
+          'docId': doc.id,
+          'user': displayName,
+          'user_name': rawName,
+          'user_email': rawEmail,
+          'uid': uidRaw,
+          'isGuest': isGuest,
+          'message': message,
+          'sentiment': sentiment,
+          'timestamp': timestampDisplay,
+          '_raw': data,
+        });
+
+        if (mapped.length >= 5) break;
+      }
+
+      setState(() {
+        latestFeedbacks = mapped.take(5).toList();
         _feedbacksLoaded = true;
       });
-    } catch (e) {
-      print("Error fetching feedbacks: $e");
+
+      debugPrint('Loaded ${latestFeedbacks.length} latest admin feedback(s).');
+    } catch (e, st) {
+      debugPrint('Error fetching admin latest feedbacks: $e\n$st');
       setState(() {
+        latestFeedbacks = [];
         _feedbacksLoaded = true;
       });
     }
@@ -342,12 +624,11 @@ class _SuperAdminDashboardPageState extends State<SuperAdminDashboardPage> {
     try {
       final Map<int, int> monthlyCounts = {for (int i = 1; i <= 12; i++) i: 0};
 
-      final usersSnapshot = await FirebaseFirestore.instance
-          .collection('users')
-          .get();
+      final usersSnapshot = await FirebaseFirestore.instance.collection('users').get();
 
       for (var userDoc in usersSnapshot.docs) {
         final userId = userDoc.id;
+
         final convosSnapshot = await FirebaseFirestore.instance
             .collection('users')
             .doc(userId)
@@ -355,13 +636,52 @@ class _SuperAdminDashboardPageState extends State<SuperAdminDashboardPage> {
             .get();
 
         for (var convoDoc in convosSnapshot.docs) {
-          final data = convoDoc.data();
-          final timestamp = data['lastTimestamp'];
-          if (timestamp is Timestamp) {
-            final date = timestamp.toDate();
+          final messagesSnapshot = await convoDoc.reference
+              .collection('messages')
+              .where('role', isEqualTo: 'user')
+              .get();
+
+          for (var msgDoc in messagesSnapshot.docs) {
+            final msgData = msgDoc.data();
+            final ts = msgData['timestamp'];
+            DateTime? date;
+            if (ts is Timestamp) date = ts.toDate();
+            else if (ts is int) date = DateTime.fromMillisecondsSinceEpoch(ts);
+            else if (ts is String) {
+              try {
+                date = DateTime.parse(ts);
+              } catch (_) {}
+            } else if (ts is DateTime) date = ts;
+
+            if (date == null) continue;
             final month = date.month;
             monthlyCounts[month] = (monthlyCounts[month] ?? 0) + 1;
           }
+        }
+      }
+
+      final guestSnapshot = await FirebaseFirestore.instance.collection('guest_conversations').get();
+      for (var guestDoc in guestSnapshot.docs) {
+        final messagesSnapshot = await guestDoc.reference
+            .collection('messages')
+            .where('role', isEqualTo: 'user')
+            .get();
+
+        for (var msgDoc in messagesSnapshot.docs) {
+          final msgData = msgDoc.data();
+          final ts = msgData['timestamp'];
+          DateTime? date;
+          if (ts is Timestamp) date = ts.toDate();
+          else if (ts is int) date = DateTime.fromMillisecondsSinceEpoch(ts);
+          else if (ts is String) {
+            try {
+              date = DateTime.parse(ts);
+            } catch (_) {}
+          } else if (ts is DateTime) date = ts;
+
+          if (date == null) continue;
+          final month = date.month;
+          monthlyCounts[month] = (monthlyCounts[month] ?? 0) + 1;
         }
       }
 
@@ -391,8 +711,8 @@ class _SuperAdminDashboardPageState extends State<SuperAdminDashboardPage> {
         barGroups = groups;
         _barChartLoaded = true;
       });
-    } catch (e) {
-      print("Error fetching monthly chat logs: $e");
+    } catch (e, st) {
+      debugPrint('Error fetching monthly chat counts: $e\n$st');
       setState(() {
         _barChartLoaded = true;
       });
@@ -416,13 +736,14 @@ class _SuperAdminDashboardPageState extends State<SuperAdminDashboardPage> {
       );
     }
 
+    final poppinsTextTheme = GoogleFonts.poppinsTextTheme(
+      Theme.of(context).textTheme,
+    ).apply(bodyColor: dark, displayColor: dark);
+
     return Theme(
       data: Theme.of(context).copyWith(
-        textTheme: Theme.of(context).textTheme.apply(
-          fontFamily: 'Poppins',
-          bodyColor: dark,
-          displayColor: dark,
-        ),
+        textTheme: poppinsTextTheme,
+        primaryTextTheme: poppinsTextTheme,
       ),
       child: Scaffold(
         backgroundColor: lightBackground,
@@ -436,14 +757,13 @@ class _SuperAdminDashboardPageState extends State<SuperAdminDashboardPage> {
           elevation: 0,
           titleSpacing: 0,
           title: Row(
-            children: const [
-              SizedBox(width: 12),
+            children: [
+              const SizedBox(width: 12),
               Text(
                 "Dashboard",
-                style: TextStyle(
+                style: GoogleFonts.poppins(
                   color: primarycolordark,
                   fontWeight: FontWeight.bold,
-                  fontFamily: 'Poppins',
                 ),
               ),
             ],
@@ -460,7 +780,6 @@ class _SuperAdminDashboardPageState extends State<SuperAdminDashboardPage> {
                     context,
                     MaterialPageRoute(builder: (_) => const AdminProfilePage()),
                   );
-                  // Reload Firestore info after editing profile
                   await _loadSuperAdminInfo();
                 },
               ),
@@ -482,8 +801,8 @@ class _SuperAdminDashboardPageState extends State<SuperAdminDashboardPage> {
                           int columns = constraints.maxWidth > 1000
                               ? 4
                               : constraints.maxWidth > 600
-                              ? 2
-                              : 1;
+                                  ? 2
+                                  : 1;
 
                           double spacing = 12;
                           double totalSpacing = (columns - 1) * spacing;
@@ -516,7 +835,7 @@ class _SuperAdminDashboardPageState extends State<SuperAdminDashboardPage> {
                                 width: cardWidth,
                               ),
                               StatCard(
-                                title: 'Total Feedback',
+                                title: 'Unknown Feedback',
                                 value: '${_dashboardStats!['totalFeedback']}',
                                 subtitle: 'Feedback',
                                 icon: Icons.message,
@@ -542,27 +861,25 @@ class _SuperAdminDashboardPageState extends State<SuperAdminDashboardPage> {
                       LayoutBuilder(
                         builder: (context, constraints) {
                           if (constraints.maxWidth > 800) {
-                            // Large screen: Fixed height, no scroll, show only top 5 items
+                            const double panelHeight = 435;
                             return SizedBox(
-                              height: 435,
+                              height: panelHeight,
                               child: Row(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Expanded(
-                                    flex: 2,
-                                    child: RecentChatLogsCard(
-                                      logs: recentChatLogs.take(5).toList(),
-                                      fixedHeight: 450,
+                                    flex: 1,
+                                    child: TopOfficeChatsCard(
+                                      offices: topOfficeChats,
+                                      fixedHeight: panelHeight,
                                     ),
                                   ),
                                   const SizedBox(width: 20),
                                   Expanded(
                                     flex: 1,
                                     child: UserFeedbackCard(
-                                      feedbacks: latestFeedbacks
-                                          .take(5)
-                                          .toList(),
-                                      fixedHeight: 450,
+                                      feedbacks: latestFeedbacks.take(5).toList(),
+                                      fixedHeight: panelHeight,
                                     ),
                                   ),
                                 ],
@@ -572,7 +889,7 @@ class _SuperAdminDashboardPageState extends State<SuperAdminDashboardPage> {
                             return Column(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
-                                RecentChatLogsCard(logs: recentChatLogs),
+                                TopOfficeChatsCard(offices: topOfficeChats),
                                 const SizedBox(height: 16),
                                 UserFeedbackCard(feedbacks: latestFeedbacks),
                               ],
@@ -585,6 +902,137 @@ class _SuperAdminDashboardPageState extends State<SuperAdminDashboardPage> {
                 ),
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class TopOfficeChatsCard extends StatelessWidget {
+  final List<Map<String, dynamic>> offices;
+  final double? fixedHeight;
+  const TopOfficeChatsCard({super.key, required this.offices, this.fixedHeight});
+
+  @override
+  Widget build(BuildContext context) {
+    final List<Color> cardColors = [
+      const Color(0xFFFFF3E0),
+      const Color(0xFFFFF8E1),
+      const Color(0xFFE3F2FD),
+      const Color(0xFFE8F5E9),
+      const Color(0xFFF3E5F5),
+    ];
+
+    // Take only up to 5 items
+    final itemsToShow = offices.take(5).toList();
+
+    return Card(
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: Colors.grey.shade300, width: 0.5),
+      ),
+      elevation: 2,
+      child: Container(
+        height: fixedHeight ?? 435,
+        padding: const EdgeInsets.all(20.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              "Top 5 Performing Offices",
+              style: GoogleFonts.poppins(
+                fontWeight: FontWeight.bold,
+                fontSize: 18,
+                color: primarycolordark,
+              ),
+            ),
+            const SizedBox(height: 16),
+            if (offices.isEmpty)
+              Expanded(
+                child: Center(
+                  child: Text(
+                    "No office chat data found.",
+                    style: GoogleFonts.poppins(
+                      fontSize: 16,
+                      color: Colors.grey[600],
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              )
+            else
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: List.generate(
+                    itemsToShow.length,
+                    (index) {
+                      final office = itemsToShow[index];
+                      final bgColor = cardColors[index % cardColors.length];
+
+                      return Card(
+                        color: bgColor,
+                        elevation: 0,
+                        margin: const EdgeInsets.symmetric(vertical: 4),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          side: BorderSide(color: primarycolor.withOpacity(0.12)),
+                        ),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: () {},
+                          hoverColor: primarycolor.withOpacity(0.06),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              vertical: 12,
+                              horizontal: 12,
+                            ),
+                            child: Row(
+                              children: [
+                                CircleAvatar(
+                                  backgroundColor: primarycolor,
+                                  radius: 18,
+                                  child: Text(
+                                    "${index + 1}",
+                                    style: GoogleFonts.poppins(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    office["office"] ?? '',
+                                    style: GoogleFonts.poppins(
+                                      color: dark,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 14,
+                                    ),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Text(
+                                  "${office["chatCount"]}x",
+                                  style: GoogleFonts.poppins(
+                                    color: primarycolordark,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
           ],
         ),
       ),
@@ -608,19 +1056,17 @@ class CustomHeader extends StatelessWidget {
             children: [
               Text(
                 'Hello, ${capitalizeEachWord(firstName.isNotEmpty ? firstName : 'there')}',
-                style: const TextStyle(
+                style: GoogleFonts.poppins(
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
                   color: primarycolordark,
-                  fontFamily: 'Poppins',
                 ),
               ),
               const SizedBox(height: 4),
-              const Text(
+              Text(
                 'Welcome to your Super Admin dashboard',
-                style: TextStyle(
+                style: GoogleFonts.poppins(
                   color: primarycolordark,
-                  fontFamily: 'Poppins',
                 ),
               ),
             ],
@@ -631,138 +1077,10 @@ class CustomHeader extends StatelessWidget {
   }
 }
 
-class RecentChatLogsCard extends StatelessWidget {
-  final List<Map<String, dynamic>> logs;
-  final double? fixedHeight;
-  const RecentChatLogsCard({super.key, required this.logs, this.fixedHeight});
-
-  int _maxItemsForHeight(double height) {
-    const headerAndPadding = 20 + 20 + 36 + 12;
-    const tileHeight = 68;
-    final available = height - headerAndPadding;
-    return available ~/ tileHeight;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    List<Map<String, dynamic>> itemsToShow = logs;
-    if (fixedHeight != null) {
-      final maxItems = _maxItemsForHeight(fixedHeight!);
-      itemsToShow = logs.take(maxItems).toList();
-    } else {
-      itemsToShow = logs.take(5).toList();
-    }
-
-    return Card(
-      color: Colors.white,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: Colors.grey, width: 0.5),
-      ),
-      elevation: 2,
-      child: Container(
-        height: fixedHeight,
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  "Recent Chat Logs",
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18,
-                    color: primarycolordark,
-                    fontFamily: 'Poppins',
-                  ),
-                ),
-                SeeAllButton(
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const ChatsPage()),
-                    );
-                  },
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            itemsToShow.isEmpty
-                ? Expanded(
-                    child: Center(
-                      child: Text(
-                        "No recent chats found.",
-                        style: TextStyle(fontSize: 18),
-                        textAlign: TextAlign.center,
-                      ),
-                    ),
-                  )
-                : Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: itemsToShow.map((log) {
-                      return ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: CircleAvatar(
-                          backgroundColor: primarycolordark,
-                          child: Text(
-                            log['user']!.isNotEmpty
-                                ? log['user']![0].toUpperCase()
-                                : 'U',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontFamily: 'Poppins',
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                        title: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              log['user'] ?? '',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontFamily: 'Poppins',
-                                color: dark,
-                                fontSize: 16,
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              log['message'] ?? '',
-                              style: const TextStyle(
-                                fontFamily: 'Poppins',
-                                color: dark,
-                                fontSize: 14,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ],
-                        ),
-                      );
-                    }).toList(),
-                  ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class UserFeedbackCard extends StatelessWidget {
   final List<Map<String, dynamic>> feedbacks;
   final double? fixedHeight;
-  const UserFeedbackCard({
-    super.key,
-    required this.feedbacks,
-    this.fixedHeight,
-  });
+  const UserFeedbackCard({super.key, required this.feedbacks, this.fixedHeight});
 
   @override
   Widget build(BuildContext context) {
@@ -772,7 +1090,10 @@ class UserFeedbackCard extends StatelessWidget {
       color: Colors.white,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: Colors.grey, width: 0.5),
+        side: BorderSide(
+          color: Colors.grey,
+          width: 0.5,
+        ),
       ),
       elevation: 2,
       child: Container(
@@ -784,13 +1105,12 @@ class UserFeedbackCard extends StatelessWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text(
-                  "User Feedbacks",
-                  style: TextStyle(
+                Text(
+                  "Recent Feedbacks",
+                  style: GoogleFonts.poppins(
                     fontWeight: FontWeight.bold,
                     fontSize: 18,
                     color: primarycolordark,
-                    fontFamily: 'Poppins',
                   ),
                 ),
                 SeeAllButton(
@@ -806,10 +1126,10 @@ class UserFeedbackCard extends StatelessWidget {
             const SizedBox(height: 16),
             Expanded(
               child: itemsToShow.isEmpty
-                  ? const Center(
+                  ? Center(
                       child: Text(
                         "No recent feedbacks found.",
-                        style: TextStyle(fontSize: 18),
+                        style: GoogleFonts.poppins(fontSize: 18),
                       ),
                     )
                   : ListView.builder(
@@ -819,8 +1139,7 @@ class UserFeedbackCard extends StatelessWidget {
                         final feedback = itemsToShow[idx];
                         IconData sentimentIcon = Icons.thumb_up;
                         Color iconColor = secondarycolor;
-                        if (feedback['sentiment'].toString().toLowerCase() ==
-                            'negative') {
+                        if (feedback['sentiment'].toString().toLowerCase() == 'negative') {
                           sentimentIcon = Icons.warning_amber_rounded;
                           iconColor = secondarycolor;
                         }
@@ -830,13 +1149,9 @@ class UserFeedbackCard extends StatelessWidget {
                           leading: CircleAvatar(
                             backgroundColor: primarycolordark,
                             child: Text(
-                              feedback['user']
-                                  .toString()
-                                  .substring(0, 1)
-                                  .toUpperCase(),
-                              style: const TextStyle(
+                              feedback['user'].toString().substring(0, 1).toUpperCase(),
+                              style: GoogleFonts.poppins(
                                 color: Colors.white,
-                                fontFamily: 'Poppins',
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold,
                               ),
@@ -847,9 +1162,8 @@ class UserFeedbackCard extends StatelessWidget {
                             children: [
                               Text(
                                 feedback['user'],
-                                style: const TextStyle(
+                                style: GoogleFonts.poppins(
                                   fontWeight: FontWeight.bold,
-                                  fontFamily: 'Poppins',
                                   color: dark,
                                   fontSize: 16,
                                 ),
@@ -857,17 +1171,12 @@ class UserFeedbackCard extends StatelessWidget {
                               const SizedBox(height: 6),
                               Row(
                                 children: [
-                                  Icon(
-                                    sentimentIcon,
-                                    color: iconColor,
-                                    size: 22,
-                                  ),
+                                  Icon(sentimentIcon, color: iconColor, size: 22),
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: Text(
                                       feedback['message'],
-                                      style: const TextStyle(
-                                        fontFamily: 'Poppins',
+                                      style: GoogleFonts.poppins(
                                         color: dark,
                                         fontSize: 14,
                                       ),
@@ -917,20 +1226,13 @@ class _SeeAllButtonState extends State<SeeAllButton> {
             color: isHovered ? primarycolor.withOpacity(0.85) : primarycolor,
             borderRadius: BorderRadius.circular(8),
             boxShadow: isHovered
-                ? [
-                    BoxShadow(
-                      color: primarycolordark.withOpacity(0.15),
-                      blurRadius: 6,
-                      offset: Offset(0, 2),
-                    ),
-                  ]
+                ? [BoxShadow(color: primarycolordark.withOpacity(0.15), blurRadius: 6, offset: Offset(0, 2))]
                 : [],
           ),
           child: Text(
             widget.label,
-            style: const TextStyle(
+            style: GoogleFonts.poppins(
               color: dark,
-              fontFamily: 'Poppins',
               fontWeight: FontWeight.w600,
               letterSpacing: 0.5,
             ),
@@ -987,10 +1289,9 @@ class StatCard extends StatelessWidget {
                   padding: const EdgeInsets.symmetric(horizontal: 4),
                   child: Text(
                     title,
-                    style: const TextStyle(
+                    style: GoogleFonts.poppins(
                       fontSize: 11,
                       fontWeight: FontWeight.w600,
-                      fontFamily: 'Poppins',
                       color: secondarycolor,
                     ),
                     textAlign: TextAlign.center,
@@ -1001,7 +1302,6 @@ class StatCard extends StatelessWidget {
               ],
             ),
           ),
-
           Expanded(
             child: Padding(
               padding: const EdgeInsets.only(left: 12, right: 16),
@@ -1013,11 +1313,10 @@ class StatCard extends StatelessWidget {
                     children: [
                       Text(
                         value,
-                        style: const TextStyle(
+                        style: GoogleFonts.poppins(
                           fontSize: 26,
                           fontWeight: FontWeight.bold,
                           color: primarycolor,
-                          fontFamily: 'Poppins',
                         ),
                       ),
                       const SizedBox(width: 6),
@@ -1026,10 +1325,9 @@ class StatCard extends StatelessWidget {
                   const SizedBox(height: 4),
                   Text(
                     subtitle,
-                    style: const TextStyle(
+                    style: GoogleFonts.poppins(
                       fontSize: 12,
                       color: Colors.white54,
-                      fontFamily: 'Poppins',
                     ),
                   ),
                 ],
@@ -1050,7 +1348,7 @@ class ChatItem extends StatelessWidget {
   Widget build(BuildContext context) {
     return ListTile(
       leading: const Icon(Icons.chat_bubble_outline, color: primarycolordark),
-      title: Text(message, style: const TextStyle(fontFamily: 'Poppins')),
+      title: Text(message, style: GoogleFonts.poppins()),
       contentPadding: const EdgeInsets.symmetric(vertical: 4),
     );
   }
@@ -1062,11 +1360,37 @@ class UserChatsBarChart extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    double maxY = barGroups.isNotEmpty
+        ? barGroups.map((e) => e.barRods.first.toY).reduce((a, b) => a > b ? a : b)
+        : 0;
+
+    double adjustedMaxY = maxY + (maxY * 0.2);
+    
+    double interval;
+    if (maxY <= 10) {
+      interval = 2; 
+    } else if (maxY <= 20) {
+      interval = 5; 
+    } else if (maxY <= 50) {
+      interval = 10;
+    } else if (maxY <= 100) {
+      interval = 20; 
+    } else if (maxY <= 200) {
+      interval = 50;
+    } else if (maxY <= 500) {
+      interval = 100;
+    } else {
+      interval = 200;
+    }
+
     return Card(
       color: Colors.white,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: Colors.grey, width: 0.5),
+        side: BorderSide(
+          color: Colors.grey.shade300,
+          width: 0.5,
+        ),
       ),
       elevation: 2,
       child: Padding(
@@ -1074,37 +1398,41 @@ class UserChatsBarChart extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
+            Text(
               "User Chats Over Time",
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 fontWeight: FontWeight.bold,
                 fontSize: 18,
-                fontFamily: 'Poppins',
                 color: primarycolordark,
               ),
             ),
             const SizedBox(height: 16),
             barGroups.isEmpty
-                ? const Center(child: Text("No chat data found."))
+                ? Center(
+                    child: Text(
+                      "No chat data found.",
+                      style: GoogleFonts.poppins(
+                        fontSize: 16,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                  )
                 : SizedBox(
                     height: 250,
                     child: BarChart(
                       BarChartData(
-                        maxY:
-                            barGroups
-                                .map((e) => e.barRods.first.toY)
-                                .reduce((a, b) => a > b ? a : b) +
-                            20,
+                        maxY: adjustedMaxY,
+                        minY: 0,
                         barTouchData: BarTouchData(
                           enabled: true,
                           touchTooltipData: BarTouchTooltipData(
                             tooltipBgColor: primarycolor,
+                            tooltipRoundedRadius: 8,
                             getTooltipItem: (group, groupIndex, rod, rodIndex) {
                               return BarTooltipItem(
                                 '${rod.toY.toInt()} chats',
-                                const TextStyle(
-                                  color: Colors.white,
-                                  fontFamily: 'Poppins',
+                                GoogleFonts.poppins(
+                                  color: dark,
                                   fontSize: 12,
                                   fontWeight: FontWeight.bold,
                                 ),
@@ -1112,30 +1440,58 @@ class UserChatsBarChart extends StatelessWidget {
                             },
                           ),
                         ),
-                        borderData: FlBorderData(show: false),
-                        gridData: FlGridData(show: false),
+                        borderData: FlBorderData(
+                          show: true,
+                          border: Border(
+                            left: BorderSide(
+                              color: Colors.grey.withOpacity(0.3),
+                              width: 1,
+                            ),
+                            bottom: BorderSide(
+                              color: Colors.grey.withOpacity(0.3),
+                              width: 1,
+                            ),
+                          ),
+                        ),
+                        gridData: FlGridData(
+                          show: true,
+                          drawVerticalLine: false,
+                          horizontalInterval: interval,
+                          getDrawingHorizontalLine: (value) {
+                            return FlLine(
+                              color: Colors.grey.withOpacity(0.15),
+                              strokeWidth: 1,
+                            );
+                          },
+                        ),
                         alignment: BarChartAlignment.spaceAround,
                         barGroups: barGroups,
                         titlesData: FlTitlesData(
                           leftTitles: AxisTitles(
                             sideTitles: SideTitles(
                               showTitles: true,
-                              reservedSize: 48,
+                              reservedSize: 70, 
+                              interval: interval,
                               getTitlesWidget: (value, meta) {
-                                return SideTitleWidget(
-                                  axisSide: meta.axisSide,
-                                  space: 8,
-                                  child: Text(
-                                    '${value.toInt()} chats',
-                                    style: const TextStyle(
-                                      color: dark,
-                                      fontFamily: 'Poppins',
-                                      fontSize: 12,
+                                if (value == 0 || value % interval == 0) {
+                                  return Padding(
+                                    padding: const EdgeInsets.only(right: 8),
+                                    child: Text(
+                                      '${value.toInt()} chats',
+                                      style: GoogleFonts.poppins(
+                                        color: dark,
+                                        fontSize: 10, 
+                                        fontWeight: FontWeight.w500,
+                                        height: 1,
+                                      ),
+                                      textAlign: TextAlign.right,
+                                      softWrap: false, 
+                                      overflow: TextOverflow.fade, 
                                     ),
-                                  ),
-                                );
+                                  );
+                                }
+                                return const SizedBox.shrink();
                               },
-                              interval: 50,
                             ),
                           ),
                           bottomTitles: AxisTitles(
@@ -1143,25 +1499,22 @@ class UserChatsBarChart extends StatelessWidget {
                               showTitles: true,
                               getTitlesWidget: (value, meta) {
                                 const months = [
-                                  'Jan',
-                                  'Feb',
-                                  'Mar',
-                                  'Apr',
-                                  'May',
-                                  'Jun',
-                                  'Jul',
-                                  'Aug',
-                                  'Sep',
-                                  'Oct',
-                                  'Nov',
-                                  'Dec',
+                                  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                                  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
                                 ];
-                                return Text(
-                                  months[value.toInt()],
-                                  style: const TextStyle(
-                                    color: dark,
-                                    fontFamily: 'Poppins',
-                                    fontSize: 12,
+                                final idx = value.toInt();
+                                final label = (idx >= 0 && idx < 12) 
+                                    ? months[idx] 
+                                    : '';
+                                return Padding(
+                                  padding: const EdgeInsets.only(top: 8),
+                                  child: Text(
+                                    label,
+                                    style: GoogleFonts.poppins(
+                                      color: dark,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w500,
+                                    ),
                                   ),
                                 );
                               },
@@ -1220,10 +1573,10 @@ class _HoverButtonState extends State<HoverButton> {
           duration: const Duration(milliseconds: 130),
           decoration: BoxDecoration(
             color: widget.isActive
-                ? primarycolor.withOpacity(0.25) // Active highlight
+                ? primarycolor.withOpacity(0.25)
                 : (isHovered
-                      ? primarycolor.withOpacity(0.10) // Hover highlight
-                      : Colors.transparent),
+                    ? primarycolor.withOpacity(0.10)
+                    : Colors.transparent),
             borderRadius: BorderRadius.circular(10),
           ),
           child: ListTile(
@@ -1235,12 +1588,11 @@ class _HoverButtonState extends State<HoverButton> {
             ),
             title: Text(
               widget.label ?? '',
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 color: widget.isActive
                     ? primarycolordark
                     : (widget.isLogout ? Colors.red : primarycolordark),
                 fontWeight: widget.isActive ? FontWeight.bold : FontWeight.w600,
-                fontFamily: 'Poppins',
               ),
             ),
             onTap: widget.onPressed,
@@ -1254,16 +1606,12 @@ class _HoverButtonState extends State<HoverButton> {
         cursor: SystemMouseCursors.click,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 130),
-          transform: isHovered
-              ? (Matrix4.identity()..scale(1.07))
-              : Matrix4.identity(),
+          transform:
+              isHovered ? (Matrix4.identity()..scale(1.07)) : Matrix4.identity(),
           child: TextButton(
             style: TextButton.styleFrom(
               foregroundColor: primarycolordark,
-              textStyle: const TextStyle(
-                fontFamily: 'Poppins',
-                fontWeight: FontWeight.w600,
-              ),
+              textStyle: GoogleFonts.poppins(fontWeight: FontWeight.w600),
             ),
             onPressed: widget.onPressed,
             child: widget.child ?? const SizedBox(),
@@ -1276,7 +1624,7 @@ class _HoverButtonState extends State<HoverButton> {
 
 class NavigationDrawer extends StatelessWidget {
   final String? applicationLogoUrl;
-  final String activePage; // holds current active page name
+  final String activePage;
 
   const NavigationDrawer({
     super.key,
@@ -1293,28 +1641,19 @@ class NavigationDrawer extends StatelessWidget {
           DrawerHeader(
             decoration: const BoxDecoration(color: lightBackground),
             child: Center(
-              child:
-                  applicationLogoUrl != null && applicationLogoUrl!.isNotEmpty
+              child: applicationLogoUrl != null && applicationLogoUrl!.isNotEmpty
                   ? Image.network(
                       applicationLogoUrl!,
                       height: double.infinity,
                       fit: BoxFit.contain,
-                      errorBuilder: (context, error, stackTrace) => Image.asset(
-                        'assets/images/dhvbot.png',
-                        height: double.infinity,
-                        fit: BoxFit.contain,
-                      ),
+                      errorBuilder: (context, error, stackTrace) =>
+                          Image.asset('assets/images/dhvbot.png'),
                     )
-                  : Image.asset(
-                      'assets/images/dhvbot.png',
-                      height: double.infinity,
-                      fit: BoxFit.contain,
-                    ),
+                  : Image.asset('assets/images/dhvbot.png'),
             ),
           ),
           _drawerItem(context, Icons.dashboard_outlined, "Dashboard", () {
-            Navigator.pop(context);
-            Navigator.push(
+            Navigator.pushReplacement(
               context,
               MaterialPageRoute(
                 builder: (_) => const SuperAdminDashboardPage(),
@@ -1322,59 +1661,74 @@ class NavigationDrawer extends StatelessWidget {
             );
           }),
           _drawerItem(context, Icons.people_outline, "Users Info", () {
-            Navigator.pop(context);
-            Navigator.push(
+            Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (_) => const UserinfoPage()),
             );
           }),
-          _drawerItem(context, Icons.chat_outlined, "Chat Logs", () {
-            Navigator.pop(context);
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const ChatsPage()),
-            );
-          }),
+          // _drawerItem(context, Icons.chat_outlined, "Chat Logs", () {
+          //   Navigator.pushReplacement(
+          //     context,
+          //     MaterialPageRoute(builder: (_) => const ChatsPage()),
+          //   );
+          // }),
           _drawerItem(context, Icons.feedback_outlined, "Feedbacks", () {
-            Navigator.pop(context);
-            Navigator.push(
+            Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (_) => const FeedbacksPage()),
             );
           }),
-          _drawerItem(
-            context,
-            Icons.admin_panel_settings_outlined,
-            "Admin Management",
-            () {
-              Navigator.pop(context);
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const AdminManagementPage()),
-              );
-            },
-          ),
-          _drawerItem(context, Icons.receipt_long_outlined, "Audit Logs", () {
-            Navigator.pop(context);
-            Navigator.push(
+          _drawerItem(context, Icons.admin_panel_settings_outlined,
+              "Admin Management", () {
+            Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (_) => const AuditLogsPage()),
+              MaterialPageRoute(builder: (_) => const AdminManagementPage()),
             );
           }),
+          // _drawerItem(context, Icons.warning_amber_rounded,
+          //     "Emergency Requests", () {
+          //   Navigator.pop(context);
+          //   Navigator.push(
+          //     context,
+          //     MaterialPageRoute(builder: (_) => const EmergencyRequestsPage()),
+          //   );
+          // }),
           _drawerItem(context, Icons.settings_outlined, "Settings", () {
-            Navigator.pop(context);
-            Navigator.push(
+            Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (_) => const SystemSettingsPage()),
             );
           }),
-          const Spacer(),
-          _drawerItem(context, Icons.logout, "Logout", () {
+          _drawerItem(context, Icons.receipt_long_outlined, "Audit Logs", () {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (_) => const AdminLoginPage()),
+              MaterialPageRoute(builder: (_) => const AuditLogsPage()),
             );
-          }, isLogout: true),
+          }),
+          const Spacer(),
+          _drawerItem(
+            context,
+            Icons.logout,
+            "Logout",
+            () async {
+              try {
+                await FirebaseAuth.instance.signOut();
+                Navigator.pushAndRemoveUntil(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AdminLoginPage()),
+                  (route) => false,
+                );
+              } catch (e) {
+                print("Logout error: $e");
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                      content:
+                          Text("Logout failed. Please try again.", style: GoogleFonts.poppins())),
+                );
+              }
+            },
+            isLogout: true,
+          ),
         ],
       ),
     );

@@ -1,8 +1,14 @@
+import 'package:flutter/foundation.dart';
+import 'dart:convert';
+import 'package:encrypt/encrypt.dart' as encrypt;
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:lottie/lottie.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:chatbot/adminlogin.dart';
 import 'package:chatbot/superadmin/dashboard.dart';
 import 'package:chatbot/superadmin/userinfo.dart';
@@ -10,8 +16,8 @@ import 'package:chatbot/superadmin/auditlogs.dart';
 import 'package:chatbot/superadmin/chatlogs.dart';
 import 'package:chatbot/superadmin/feedbacks.dart';
 import 'package:chatbot/superadmin/settings.dart';
-import 'package:chatbot/superadmin/adduser.dart';
 import 'package:chatbot/superadmin/profile.dart';
+import 'package:chatbot/superadmin/emergencypage.dart';
 
 const primarycolor = Color(0xFFffc803);
 const primarycolordark = Color(0xFF550100);
@@ -19,6 +25,9 @@ const secondarycolor = Color(0xFF800000);
 const dark = Color(0xFF17110d);
 const textdark = Color(0xFF343a40);
 const lightBackground = Color(0xFFFEFEFE);
+
+const storage = FlutterSecureStorage();
+const _possibleAesKeyNames = ['app_aes_key_v1', 'app_aes_key_v1_superadmin'];
 
 String capitalizeEachWord(String text) {
   return text
@@ -55,6 +64,9 @@ class _ProfileButtonState extends State<ProfileButton> {
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isSmallScreen = screenWidth < 600;
+
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => isHovered = true),
@@ -73,41 +85,47 @@ class _ProfileButtonState extends State<ProfileButton> {
                 : Colors.transparent,
             borderRadius: BorderRadius.circular(15),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircleAvatar(
-                radius: 18,
-                backgroundImage: widget.imageUrl.startsWith('http')
-                    ? NetworkImage(widget.imageUrl)
-                    : AssetImage(widget.imageUrl) as ImageProvider,
-                backgroundColor: Colors.grey[200],
-              ),
-              const SizedBox(width: 10),
-              Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.name,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: dark,
-                      fontFamily: 'Poppins',
+          child: isSmallScreen
+              ? CircleAvatar(
+                  radius: 18,
+                  backgroundImage: widget.imageUrl.startsWith('http')
+                      ? NetworkImage(widget.imageUrl)
+                      : AssetImage(widget.imageUrl) as ImageProvider,
+                  backgroundColor: Colors.grey[200],
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircleAvatar(
+                      radius: 18,
+                      backgroundImage: widget.imageUrl.startsWith('http')
+                          ? NetworkImage(widget.imageUrl)
+                          : AssetImage(widget.imageUrl) as ImageProvider,
+                      backgroundColor: Colors.grey[200],
                     ),
-                  ),
-                  Text(
-                    widget.role,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: dark,
-                      fontFamily: 'Poppins',
+                    const SizedBox(width: 10),
+                    Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.name,
+                          style: GoogleFonts.poppins(
+                            fontWeight: FontWeight.bold,
+                            color: dark,
+                          ),
+                        ),
+                        Text(
+                          widget.role,
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            color: dark,
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
-            ],
-          ),
+                  ],
+                ),
         ),
       ),
     );
@@ -134,7 +152,6 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
   String lastName = "";
   String profilePictureUrl = "assets/images/defaultDP.jpg";
 
-  // For Application Logo
   String? _applicationLogoUrl;
   bool _logoLoaded = false;
 
@@ -143,21 +160,67 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
 
   String get fullName => '$firstName $lastName';
 
+  String _displayStatusLabel(dynamic status) {
+    final s = status?.toString().toLowerCase() ?? '';
+    if (s == 'inactive' || s == 'pending') return 'PENDING';
+    return s.toUpperCase();
+  }
+
   @override
   void initState() {
     super.initState();
     _searchController.addListener(() => setState(() {}));
+    _ensureEncryptionKeyConsistency();
     _loadUserDataList();
     _loadAdminInfo();
     _loadApplicationLogo();
   }
 
+  Widget _buildDebugPanel() {
+    if (users.isEmpty) return const SizedBox.shrink();
+    
+    final statusCounts = <String, int>{};
+    for (var user in users) {
+      final status = user['emailStatus'] as String? ?? 'UNKNOWN';
+      statusCounts[status] = (statusCounts[status] ?? 0) + 1;
+    }
+    
+    return Card(
+      margin: const EdgeInsets.all(16),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Email Encryption Status',
+              style: GoogleFonts.poppins(
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+              ),
+            ),
+            const SizedBox(height: 8),
+            ...statusCounts.entries.map(
+              (entry) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(entry.key, style: GoogleFonts.poppins()),
+                    Text(entry.value.toString(), style: GoogleFonts.poppins()),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _loadApplicationLogo() async {
     try {
-      final doc = await FirebaseFirestore.instance
-          .collection('SystemSettings')
-          .doc('global')
-          .get();
+      final doc = await FirebaseFirestore.instance.collection('SystemSettings').doc('global').get();
       if (doc.exists) {
         final data = doc.data()!;
         setState(() {
@@ -183,17 +246,12 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user != null) {
-        final doc = await FirebaseFirestore.instance
-            .collection('SuperAdmin')
-            .doc(user.uid)
-            .get();
+        final doc = await FirebaseFirestore.instance.collection('SuperAdmin').doc(user.uid).get();
         if (doc.exists) {
           setState(() {
             firstName = capitalizeEachWord(doc['firstName'] ?? '');
             lastName = capitalizeEachWord(doc['lastName'] ?? '');
-            // The following line fetches and updates the profilePictureUrl if it exists
-            profilePictureUrl =
-                doc['profilePicture'] ?? "assets/images/defaultDP.jpg";
+            profilePictureUrl = doc['profilePicture'] ?? "assets/images/defaultDP.jpg";
             _adminInfoLoaded = true;
           });
         } else {
@@ -216,18 +274,20 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
         children: [
           Text(
             label,
-            style: const TextStyle(
+            style: GoogleFonts.poppins(
               fontSize: 14,
               color: dark,
-              fontFamily: 'Poppins',
             ),
           ),
-          Text(
-            value,
-            style: const TextStyle(
-              fontSize: 14,
-              color: dark,
-              fontFamily: 'Poppins',
+          Flexible(
+            child: Text(
+              value,
+              style: GoogleFonts.poppins(
+                fontSize: 14,
+                color: dark,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],
@@ -235,7 +295,342 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
     );
   }
 
+  Widget _buildKeyManagementPanel() {
+    return Card(
+      margin: const EdgeInsets.all(16),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Encryption Key Management',
+              style: GoogleFonts.poppins(
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                ElevatedButton.icon(
+                  onPressed: () async {
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: Text('Re-encrypt All Emails?', style: GoogleFonts.poppins()),
+                        content: Text(
+                          'This will decrypt all emails with any available key and re-encrypt them with the current master key. This may fix encryption inconsistencies.',
+                          style: GoogleFonts.poppins(),
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            child: Text('Cancel', style: GoogleFonts.poppins()),
+                          ),
+                          ElevatedButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: primarycolordark,
+                            ),
+                            child: Text('Fix All Emails', style: GoogleFonts.poppins(color: Colors.white)),
+                          ),
+                        ],
+                      ),
+                    );
+                    
+                    if (confirmed == true) {
+                      await _fixAllEncryptedEmails();
+                    }
+                  },
+                  icon: const Icon(Icons.refresh),
+                  label: Text('Fix All Encrypted Emails', style: GoogleFonts.poppins()),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.orange,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _fixAllEncryptedEmails() async {
+    print('🔧 Starting email re-encryption process...');
+    
+    try {
+      final snapshot = await FirebaseFirestore.instance.collection('Admin').get();
+      final currentKey = await _getOrCreateAesKey();
+      
+      int fixed = 0;
+      int failed = 0;
+      
+      for (var doc in snapshot.docs) {
+        try {
+          final data = doc.data();
+          final emailField = data['email'] ?? '';
+          
+          if (emailField.isNotEmpty) {
+            // Try to decrypt with any available key
+            final decrypted = await _decryptValue(emailField);
+            
+            if (decrypted != null && !decrypted.startsWith('❌') && decrypted.contains('@')) {
+              // Re-encrypt with current key
+              final iv = encrypt.IV.fromSecureRandom(16);
+              final encrypter = encrypt.Encrypter(encrypt.AES(currentKey, mode: encrypt.AESMode.cbc));
+              final encrypted = encrypter.encrypt(decrypted, iv: iv);
+              final combined = <int>[]..addAll(iv.bytes)..addAll(encrypted.bytes);
+              final newEncrypted = base64Encode(combined);
+              
+              // Update in Firestore
+              await FirebaseFirestore.instance
+                  .collection('Admin')
+                  .doc(doc.id)
+                  .update({'email': newEncrypted});
+              
+              fixed++;
+              print('✅ Fixed email for ${data['firstName']} ${data['lastName']}');
+            } else {
+              failed++;
+              print('❌ Failed to decrypt email for ${data['firstName']} ${data['lastName']}');
+            }
+          }
+        } catch (e) {
+          failed++;
+          print('❌ Error processing ${doc.id}: $e');
+        }
+      }
+      
+      print('📊 Re-encryption complete: $fixed fixed, $failed failed');
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Re-encryption complete: $fixed emails fixed, $failed failed',
+              style: GoogleFonts.poppins(color: Colors.white),
+            ),
+            backgroundColor: fixed > 0 ? Colors.green : Colors.orange,
+          ),
+        );
+        
+        // Reload the data
+        await _loadUserDataList();
+      }
+      
+    } catch (e) {
+      print('❌ Re-encryption failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Re-encryption failed: $e', style: GoogleFonts.poppins(color: Colors.white)),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  encrypt.Key? _cachedKey;
+  static const String _primaryAesKeyStorageKey = 'app_aes_key_v1';
+
+  Future<encrypt.Key> _getOrCreateAesKey() async {
+    if (_cachedKey != null) return _cachedKey!;
+    
+    print('🔑 Starting key retrieval process...');
+    
+    // ALWAYS prioritize Firestore as the single source of truth
+    try {
+      print('📡 Checking Firestore for encryption key...');
+      final doc = await FirebaseFirestore.instance
+          .collection('SystemSettings')
+          .doc('encryption_key')
+          .get();
+      
+      if (doc.exists && doc.data()?['key'] != null) {
+        final firestoreKeyBase64 = doc.data()!['key'] as String;
+        final keyBytes = base64Decode(firestoreKeyBase64);
+        final key = encrypt.Key(keyBytes);
+        
+        print('✅ Found key in Firestore: ${firestoreKeyBase64.substring(0, 10)}...');
+        
+        // Save to local storage for faster access
+        await storage.write(
+          key: _primaryAesKeyStorageKey,
+          value: firestoreKeyBase64,
+          aOptions: const AndroidOptions(encryptedSharedPreferences: true),
+          iOptions: const IOSOptions(),
+        );
+        
+        _cachedKey = key;
+        print('🔑 Key cached successfully');
+        return key;
+      }
+    } catch (e) {
+      print('⚠️ Error fetching key from Firestore: $e');
+    }
+    
+    // If Firestore fails, check local storage
+    print('💾 Checking local storage for backup key...');
+    final localKey = await storage.read(key: _primaryAesKeyStorageKey);
+    if (localKey != null) {
+      try {
+        final keyBytes = base64Decode(localKey);
+        final key = encrypt.Key(keyBytes);
+        _cachedKey = key;
+        print('✅ Using local backup key: ${localKey.substring(0, 10)}...');
+        return key;
+      } catch (e) {
+        print('⚠️ Local key is corrupted: $e');
+      }
+    }
+    
+    // Last resort: create new key and save everywhere
+    print('🔧 Creating new encryption key...');
+    final generated = encrypt.Key.fromSecureRandom(32);
+    final keyBase64 = base64Encode(generated.bytes);
+    
+    // Save to Firestore first
+    try {
+      await FirebaseFirestore.instance
+          .collection('SystemSettings')
+          .doc('encryption_key')
+          .set({
+        'key': keyBase64,
+        'createdAt': FieldValue.serverTimestamp(),
+        'version': 'v1',
+      });
+      print('✅ New key saved to Firestore');
+    } catch (e) {
+      print('⚠️ Could not save key to Firestore: $e');
+    }
+    
+    // Save to local storage
+    await storage.write(
+      key: _primaryAesKeyStorageKey,
+      value: keyBase64,
+      aOptions: const AndroidOptions(encryptedSharedPreferences: true),
+      iOptions: const IOSOptions(),
+    );
+    
+    _cachedKey = generated;
+    print('🔑 New key created and cached: ${keyBase64.substring(0, 10)}...');
+    return _cachedKey!;
+  }
+
+  Future<String?> _decryptValue(String encoded) async {
+    if (encoded.isEmpty) {
+      print('⚠️ Empty encoded value');
+      return 'No email';
+    }
+    
+    // Check if it's already plaintext
+    final emailRegex = RegExp(r'^[\w\.-]+@[\w\.-]+\.\w+$');
+    if (emailRegex.hasMatch(encoded)) {
+      print('✅ Email is already plaintext');
+      return encoded;
+    }
+    
+    print('🔑 Attempting decryption...');
+    
+    try {
+      final combined = base64Decode(encoded);
+      print('📦 Combined length: ${combined.length} bytes');
+      
+      if (combined.length < 17) {
+        print('❌ Data too short: ${combined.length} bytes');
+        return '❌ Invalid data';
+      }
+      
+      // Try with current key
+      try {
+        final currentKey = await _getOrCreateAesKey();
+        final result = await _tryDecryptWithKey(combined, currentKey);
+        if (result != null && emailRegex.hasMatch(result)) {
+          print('✅ Decryption successful: ${result.substring(0, 5)}...');
+          return result;
+        }
+      } catch (e) {
+        print('⚠️ Current key failed: $e');
+      }
+      
+      // Try with alternative keys (for migration purposes)
+      print('🔧 Trying alternative keys...');
+      final alternativeKeys = await _getAllPossibleKeys();
+      
+      for (int i = 0; i < alternativeKeys.length; i++) {
+        try {
+          final result = await _tryDecryptWithKey(combined, alternativeKeys[i]);
+          if (result != null && emailRegex.hasMatch(result)) {
+            print('✅ Decryption successful with alternative key ${i + 1}: ${result.substring(0, 5)}...');
+            
+            // Re-encrypt with current key for consistency
+            await _reEncryptEmail(result, encoded);
+            
+            return result;
+          }
+        } catch (e) {
+          print('⚠️ Alternative key ${i + 1} failed: $e');
+        }
+      }
+      
+      print('❌ All decryption attempts failed');
+      return '❌ Decryption failed';
+      
+    } catch (e) {
+      print('❌ Decryption error: $e');
+      return '❌ Decryption failed';
+    }
+  }
+
+  Future<String?> _tryDecryptWithKey(Uint8List combined, encrypt.Key key) async {
+    final ivBytes = combined.sublist(0, 16);
+    final cipherBytes = combined.sublist(16);
+    final iv = encrypt.IV(ivBytes);
+    final encrypter = encrypt.Encrypter(
+      encrypt.AES(key, mode: encrypt.AESMode.cbc)
+    );
+    final encrypted = encrypt.Encrypted(cipherBytes);
+    
+    return encrypter.decrypt(encrypted, iv: iv);
+  }
+
+  Future<List<encrypt.Key>> _getAllPossibleKeys() async {
+    List<encrypt.Key> keys = [];
+    
+    // Try to get all possible keys from local storage
+    for (String keyName in _possibleAesKeyNames) {
+      try {
+        final keyBase64 = await storage.read(key: keyName);
+        if (keyBase64 != null) {
+          final keyBytes = base64Decode(keyBase64);
+          keys.add(encrypt.Key(keyBytes));
+        }
+      } catch (e) {
+        print('⚠️ Could not load key $keyName: $e');
+      }
+    }
+    
+    return keys;
+  }
+
+  Future<void> _reEncryptEmail(String plainEmail, String oldEncrypted) async {
+    // This function would re-encrypt the email with the current key
+    // and update it in Firestore. For now, just log it.
+    print('📝 Email needs re-encryption: ${plainEmail.substring(0, 5)}...');
+  }
+
+
   Future<void> _loadUserDataList() async {
+  setState(() {
+    _userDataLoaded = false;
+  });
+
+  try {
     final snapshot = await FirebaseFirestore.instance
         .collection('Admin')
         .orderBy('createdAt', descending: true)
@@ -243,8 +638,9 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
 
     int active = 0;
     int inactive = 0;
-
     List<Map<String, dynamic>> fetchedUsers = [];
+
+    print('📊 Loading ${snapshot.docs.length} admin records...');
 
     for (var doc in snapshot.docs) {
       final data = doc.data();
@@ -258,31 +654,65 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
         formattedDate = DateFormat('MMMM dd, yyyy').format(date);
       }
 
-      final String email = data['email'] ?? '';
-      final String firestoreStatus = (data['status'] ?? 'inactive')
-          .toString()
-          .toLowerCase();
+      // Handle email decryption with better error handling
+      final String emailField = data['email'] ?? '';
+      String email = 'No email';
+      String emailStatus = ''; // Track status for debugging
+      
+      if (emailField.isNotEmpty) {
+        try {
+          final decryptedEmail = await _decryptValue(emailField);
+          if (decryptedEmail != null) {
+            if (decryptedEmail.startsWith('❌')) {
+              email = decryptedEmail;
+              emailStatus = 'DECRYPTION FAILED';
+            } else {
+              email = decryptedEmail;
+              emailStatus = 'DECRYPTED SUCCESSFULLY';
+            }
+          } else {
+            email = '❌ Null result';
+            emailStatus = 'NULL RESULT';
+          }
+        } catch (e) {
+          print('Error processing email for ${data['firstName']}: $e');
+          email = '❌ Processing error';
+          emailStatus = 'PROCESSING ERROR';
+        }
+      } else {
+        emailStatus = 'NO EMAIL FIELD';
+      }
 
-      // Tally status
+      print('👤 Admin: ${data['firstName']} ${data['lastName']} - Email: $email [$emailStatus]');
+
+      final String firestoreStatus = (data['status'] ?? 'inactive').toString().toLowerCase();
+
       if (firestoreStatus == 'active') {
         active++;
       } else {
         inactive++;
       }
 
+      final String fName = data['firstName'] ?? '';
+      final String lName = data['lastName'] ?? '';
+      final String combinedName = capitalizeEachWord(
+        '${fName.toString().trim()} ${lName.toString().trim()}'.trim()
+      );
+
       fetchedUsers.add({
-        'name': capitalizeEachWord(data['name'] ?? ''),
-        'firstName': capitalizeEachWord(data['firstName'] ?? ''),
-        'lastName': capitalizeEachWord(data['lastName'] ?? ''),
+        'name': combinedName,
+        'firstName': capitalizeEachWord(fName),
+        'lastName': capitalizeEachWord(lName),
         'email': email,
-        'username': data['username'] ?? '',
+        'emailStatus': emailStatus, // Add for debugging
+        'department': data['department'] ?? '',
         'position': data['accountType'] ?? '',
         'date': formattedDate,
         'type': firestoreStatus,
         'phonenumber': data['phone'] ?? '',
         'createdAt': rawTimestamp,
         'status': firestoreStatus,
-        'uid': doc.id, // add uid for delete
+        'uid': doc.id,
       });
     }
 
@@ -295,7 +725,43 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
       inactiveAdmins = inactive;
       _userDataLoaded = true;
     });
+
+    print('✅ Loaded ${users.length} admin users successfully');
+    
+    // Print summary of email statuses
+    final statusCounts = <String, int>{};
+    for (var user in users) {
+      final status = user['emailStatus'] as String;
+      statusCounts[status] = (statusCounts[status] ?? 0) + 1;
+    }
+    
+    print('📊 Email Status Summary:');
+    statusCounts.forEach((status, count) {
+      print('  $status: $count');
+    });
+    
+  } catch (e, stackTrace) {
+    print('❌ Error loading user data: $e');
+    print('Stack trace: $stackTrace');
+    
+    setState(() {
+      _userDataLoaded = true;
+    });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Error loading admin data. Please try again.',
+            style: GoogleFonts.poppins(color: Colors.white),
+          ),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
+}
 
   List<Map<String, dynamic>> get _filteredCustomers {
     final query = _searchController.text.toLowerCase();
@@ -305,10 +771,14 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
       final name = item['name'].toString().toLowerCase();
       final type = item['type'].toString().toLowerCase();
       final matchesQuery = name.contains(query);
+
+      final isPendingType = (type == 'inactive' || type == 'pending');
+
       final matchesFilter =
           filter == 'all' ||
           (filter == 'active' && type == 'active') ||
-          (filter == 'inactive' && type == 'inactive');
+          (filter == 'pending' && isPendingType);
+
       return matchesQuery && matchesFilter;
     }).toList();
   }
@@ -319,9 +789,349 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
     super.dispose();
   }
 
+  Future<void> _ensureEncryptionKeyConsistency() async {
+    try {
+      print('🔑 Checking encryption key consistency...');
+      
+      // Try to get the key from Firestore first
+      final doc = await FirebaseFirestore.instance
+          .collection('SystemSettings')
+          .doc('encryption_key')
+          .get();
+      
+      if (doc.exists && doc.data()?['key'] != null) {
+        final firestoreKeyBase64 = doc.data()!['key'] as String;
+        
+        // Check local storage
+        bool localKeyMatches = false;
+        for (String keyName in _possibleAesKeyNames) {
+          final localKey = await storage.read(key: keyName);
+          if (localKey == firestoreKeyBase64) {
+            localKeyMatches = true;
+            print('✅ Local key matches Firestore key');
+            break;
+          }
+        }
+        
+        if (!localKeyMatches) {
+          print('🔄 Syncing encryption key from Firestore to local storage...');
+          // Sync the key from Firestore to local storage
+          for (String keyName in _possibleAesKeyNames) {
+            await storage.write(
+              key: keyName,
+              value: firestoreKeyBase64,
+              aOptions: const AndroidOptions(encryptedSharedPreferences: true),
+              iOptions: const IOSOptions(),
+            );
+          }
+          print('✅ Encryption key synced successfully');
+        }
+      } else {
+        print('⚠️ No encryption key found in Firestore, will create on demand');
+      }
+    } catch (e) {
+      print('⚠️ Error checking encryption key consistency: $e');
+    }
+  }
+
+  Future<void> _approveAdmin(String uid, String displayName) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: lightBackground,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: Text(
+          'Approve Admin?',
+          style: GoogleFonts.poppins(
+            color: primarycolordark,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        content: Text(
+          'Are you sure you want to approve admin $displayName? This will allow them to login to the admin dashboard.',
+          style: GoogleFonts.poppins(
+            color: dark,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            style: TextButton.styleFrom(foregroundColor: primarycolordark),
+            child: Text('Cancel', style: GoogleFonts.poppins()),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(backgroundColor: primarycolordark, foregroundColor: Colors.white),
+            child: Text('Approve', style: GoogleFonts.poppins(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      await FirebaseFirestore.instance.collection('Admin').doc(uid).update({
+        'status': 'active',
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Admin $displayName has been approved.', style: GoogleFonts.poppins(color: Colors.white)),
+            backgroundColor: Colors.green[700],
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+
+      await _loadUserDataList();
+    } catch (e) {
+      print('Error approving admin: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to approve admin.', style: GoogleFonts.poppins(color: Colors.white)),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _deleteAdmin(String uid, String displayName) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: lightBackground,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: Text(
+          'Delete Admin Account?',
+          style: GoogleFonts.poppins(
+            color: primarycolordark,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        content: Text(
+          'Are you sure you want to delete admin $displayName? This will permanently remove access to the Admin Management Page.',
+          style: GoogleFonts.poppins(
+            color: dark,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            style: TextButton.styleFrom(foregroundColor: primarycolordark),
+            child: Text('Cancel', style: GoogleFonts.poppins()),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(backgroundColor: primarycolordark, foregroundColor: Colors.white),
+            child: Text('Confirm Delete', style: GoogleFonts.poppins(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      await FirebaseFirestore.instance.collection('Admin').doc(uid).delete();
+
+      try {
+        final callable = FirebaseFunctions.instance.httpsCallable('deleteUser');
+        await callable.call(<String, dynamic>{'uid': uid});
+      } catch (e) {
+        print('deleteUser cloud function failed or not available: $e');
+        final currentUser = FirebaseAuth.instance.currentUser;
+        if (currentUser != null && currentUser.uid == uid) {
+          await currentUser.delete();
+        } else {
+          print('Cannot delete other users from client without Admin SDK / Cloud Function.');
+        }
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Admin $displayName deleted successfully.", style: GoogleFonts.poppins(color: Colors.white)),
+            backgroundColor: primarycolor,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+
+      await _loadUserDataList();
+    } catch (e) {
+      print("Error deleting user: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Failed to delete admin.", style: GoogleFonts.poppins(color: Colors.white)),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> migrateAllEmailsToEncrypted() async {
+    print('🔄 Starting email encryption migration...');
+    
+    try {
+      final key = await _getOrCreateAesKey();
+      final adminSnapshot = await FirebaseFirestore.instance.collection('Admin').get();
+      
+      int totalProcessed = 0;
+      int alreadyEncrypted = 0;
+      int newlyEncrypted = 0;
+      int errors = 0;
+      
+      for (var doc in adminSnapshot.docs) {
+        totalProcessed++;
+        final data = doc.data();
+        final String emailField = data['email'] ?? '';
+        
+        if (emailField.isEmpty) {
+          print('⚠️ Skipping ${doc.id} - no email field');
+          continue;
+        }
+        
+        // Check if already encrypted (base64 format)
+        if (emailField.contains('+') || emailField.contains('/') || emailField.contains('=')) {
+          // Try to decrypt to verify it's valid encryption
+          try {
+            final combined = base64Decode(emailField);
+            if (combined.length >= 17) {
+              // Looks like valid encryption
+              final ivBytes = combined.sublist(0, 16);
+              final cipherBytes = combined.sublist(16);
+              final iv = encrypt.IV(ivBytes);
+              final encrypter = encrypt.Encrypter(
+                encrypt.AES(key, mode: encrypt.AESMode.cbc, padding: 'PKCS7')
+              );
+              final encrypted = encrypt.Encrypted(cipherBytes);
+              final decrypted = encrypter.decrypt(encrypted, iv: iv);
+              
+              if (decrypted.contains('@')) {
+                print('✅ ${doc.id} - Already properly encrypted');
+                alreadyEncrypted++;
+                continue;
+              }
+            }
+          } catch (e) {
+            print('⚠️ ${doc.id} - Invalid encryption, will re-encrypt');
+          }
+        }
+        
+        // Check if it's plaintext email
+        final emailRegex = RegExp(r'^[\w\.-]+@[\w\.-]+\.\w+$');
+        if (emailRegex.hasMatch(emailField)) {
+          print('🔐 Encrypting plaintext email for ${doc.id}');
+          
+          try {
+            // Encrypt the email
+            final iv = encrypt.IV.fromSecureRandom(16);
+            final encrypter = encrypt.Encrypter(
+              encrypt.AES(key, mode: encrypt.AESMode.cbc)
+            );
+            final encrypted = encrypter.encrypt(emailField, iv: iv);
+            final combined = <int>[]..addAll(iv.bytes)..addAll(encrypted.bytes);
+            final encryptedEmail = base64Encode(combined);
+            
+            // Update Firestore
+            await FirebaseFirestore.instance
+                .collection('Admin')
+                .doc(doc.id)
+                .update({'email': encryptedEmail});
+            
+            print('✅ ${doc.id} - Successfully encrypted email');
+            newlyEncrypted++;
+          } catch (e) {
+            print('❌ ${doc.id} - Error encrypting: $e');
+            errors++;
+          }
+        } else {
+          print('⚠️ ${doc.id} - Invalid email format: $emailField');
+          errors++;
+        }
+      }
+      
+      print('\n📊 Migration Summary:');
+      print('Total processed: $totalProcessed');
+      print('Already encrypted: $alreadyEncrypted');
+      print('Newly encrypted: $newlyEncrypted');
+      print('Errors: $errors');
+      print('✅ Migration complete!');
+      
+    } catch (e, stackTrace) {
+      print('❌ Migration failed: $e');
+      print('Stack trace: $stackTrace');
+    }
+  }
+
+  // Add this button to your admin management page to trigger migration
+  Widget _buildMigrationButton() {
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: ElevatedButton.icon(
+        onPressed: () async {
+          final confirmed = await showDialog<bool>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: Text('Encrypt All Emails?', style: GoogleFonts.poppins()),
+              content: Text(
+                'This will encrypt all plaintext emails in the database. This operation cannot be undone.',
+                style: GoogleFonts.poppins(),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: Text('Cancel', style: GoogleFonts.poppins()),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: primarycolordark,
+                  ),
+                  child: Text('Encrypt All', style: GoogleFonts.poppins(color: Colors.white)),
+                ),
+              ],
+            ),
+          );
+          
+          if (confirmed == true) {
+            await migrateAllEmailsToEncrypted();
+            await _loadUserDataList(); // Reload data
+            
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'Email encryption migration completed!',
+                    style: GoogleFonts.poppins(color: Colors.white),
+                  ),
+                  backgroundColor: Colors.green,
+                ),
+              );
+            }
+          }
+        },
+        icon: const Icon(Icons.lock_outline),
+        label: Text('Encrypt All Emails', style: GoogleFonts.poppins()),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: primarycolor,
+          foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    // Loader screen covers everything until both admin info and user data are loaded
     if (!_adminInfoLoaded || !_userDataLoaded) {
       return Scaffold(
         backgroundColor: lightBackground,
@@ -335,9 +1145,13 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
       );
     }
 
+    final poppinsTextTheme = GoogleFonts.poppinsTextTheme(Theme.of(context).textTheme)
+        .apply(bodyColor: dark, displayColor: dark);
+
     return Theme(
       data: Theme.of(context).copyWith(
-        textTheme: Theme.of(context).textTheme.apply(fontFamily: 'Poppins'),
+        textTheme: poppinsTextTheme,
+        primaryTextTheme: poppinsTextTheme,
       ),
       child: Scaffold(
         drawer: NavigationDrawer(
@@ -350,15 +1164,18 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
           iconTheme: const IconThemeData(color: primarycolordark),
           elevation: 0,
           titleSpacing: 0,
-          title: const Row(
+          title: Row(
             children: [
-              SizedBox(width: 12),
-              Text(
-                "Admin Management",
-                style: TextStyle(
-                  color: primarycolordark,
-                  fontWeight: FontWeight.bold,
-                  fontFamily: 'Poppins',
+              const SizedBox(width: 12),
+              Flexible(
+                child: Text(
+                  "Admin Management",
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.poppins(
+                    color: primarycolordark,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
             ],
@@ -383,14 +1200,13 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
         body: Column(
           children: [
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),              
+              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   int columns = constraints.maxWidth > 800 ? 3 : 1;
                   double spacing = 12;
                   double totalSpacing = (columns - 1) * spacing;
-                  double cardWidth =
-                      (constraints.maxWidth - totalSpacing) / columns;
+                  double cardWidth = (constraints.maxWidth - totalSpacing) / columns;
                   return Wrap(
                     spacing: spacing,
                     runSpacing: spacing,
@@ -408,7 +1224,7 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                         width: cardWidth,
                       ),
                       StatCard(
-                        title: "Inactive",
+                        title: "Pending",
                         value: inactiveAdmins.toString(),
                         color: primarycolordark,
                         width: cardWidth,
@@ -439,38 +1255,6 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                     ),
                   ),
                   const SizedBox(width: 10),
-                  SizedBox(
-                    width: 130,
-                    height: 48,
-                    child: HoverButton(
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const AddUserPage(),
-                          ),
-                        );
-                      },
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: const [
-                          Icon(Icons.person_add, color: Colors.white, size: 18),
-                          SizedBox(width: 8),
-                          Text(
-                            'Add User',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 14,
-                              fontFamily: 'Poppins',
-                            ),
-                          ),
-                        ],
-                      ),
-                      color: secondarycolor,
-                      hoverBackground: primarycolordark,
-                      textHoverColor: Colors.white,
-                    ),
-                  ),
                 ],
               ),
             ),
@@ -479,10 +1263,7 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
               builder: (context, constraints) {
                 if (constraints.maxWidth < 600) return const SizedBox.shrink();
                 return Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 32,
-                    vertical: 8,
-                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 8),
                   child: Card(
                     color: primarycolordark,
                     elevation: 2,
@@ -490,25 +1271,21 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 12,
-                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                       child: Row(
-                        children: const [
+                        children: [
                           Expanded(
                             flex: 2,
                             child: Padding(
-                              padding: EdgeInsets.only(left: 40),
+                              padding: const EdgeInsets.symmetric(horizontal: 12),
                               child: Align(
                                 alignment: Alignment.centerLeft,
                                 child: Text(
                                   'Name',
-                                  style: TextStyle(
+                                  style: GoogleFonts.poppins(
                                     fontWeight: FontWeight.bold,
                                     fontSize: 13,
                                     color: Colors.white,
-                                    fontFamily: 'Poppins',
                                   ),
                                 ),
                               ),
@@ -519,11 +1296,23 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                             child: Center(
                               child: Text(
                                 'Email',
-                                style: TextStyle(
+                                style: GoogleFonts.poppins(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 13,
                                   color: Colors.white,
-                                  fontFamily: 'Poppins',
+                                ),
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            flex: 2,
+                            child: Center(
+                              child: Text(
+                                'Department',
+                                style: GoogleFonts.poppins(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13,
+                                  color: Colors.white,
                                 ),
                               ),
                             ),
@@ -533,11 +1322,10 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                             child: Center(
                               child: Text(
                                 'Date Created',
-                                style: TextStyle(
+                                style: GoogleFonts.poppins(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 13,
                                   color: Colors.white,
-                                  fontFamily: 'Poppins',
                                 ),
                               ),
                             ),
@@ -547,11 +1335,10 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                             child: Center(
                               child: Text(
                                 'Status',
-                                style: TextStyle(
+                                style: GoogleFonts.poppins(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 13,
                                   color: Colors.white,
-                                  fontFamily: 'Poppins',
                                 ),
                               ),
                             ),
@@ -561,11 +1348,10 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                             child: Center(
                               child: Text(
                                 'Action',
-                                style: TextStyle(
+                                style: GoogleFonts.poppins(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 13,
                                   color: Colors.white,
-                                  fontFamily: 'Poppins',
                                 ),
                               ),
                             ),
@@ -589,12 +1375,11 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                             height: 240,
                           ),
                           const SizedBox(height: 12),
-                          const Text(
+                          Text(
                             "No admin to show.",
-                            style: TextStyle(
+                            style: GoogleFonts.poppins(
                               fontSize: 14,
                               color: Colors.grey,
-                              fontFamily: 'Poppins',
                             ),
                           ),
                         ],
@@ -606,16 +1391,14 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                         final c = _filteredCustomers[index];
                         final fullName = c['name'] ?? '';
                         final joinedDate = c['date'] ?? '';
+                        final department = c['department'] ?? '';
 
                         return LayoutBuilder(
                           builder: (context, constraints) {
                             bool isSmallScreen = constraints.maxWidth < 600;
                             return Card(
                               color: Colors.white,
-                              margin: const EdgeInsets.symmetric(
-                                horizontal: 32,
-                                vertical: 6,
-                              ),
+                              margin: const EdgeInsets.symmetric(horizontal: 32, vertical: 6),
                               elevation: 2,
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(12),
@@ -626,19 +1409,15 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                                     ? Stack(
                                         children: [
                                           Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
+                                            crossAxisAlignment: CrossAxisAlignment.start,
                                             children: [
                                               Row(
                                                 children: [
                                                   CircleAvatar(
-                                                    backgroundColor:
-                                                        secondarycolor,
+                                                    backgroundColor: secondarycolor,
                                                     child: Text(
-                                                      fullName.isNotEmpty
-                                                          ? fullName[0]
-                                                          : '?',
-                                                      style: const TextStyle(
+                                                      fullName.isNotEmpty ? fullName[0] : '?',
+                                                      style: GoogleFonts.poppins(
                                                         color: Colors.white,
                                                       ),
                                                     ),
@@ -646,47 +1425,42 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                                                   const SizedBox(width: 12),
                                                   Expanded(
                                                     child: Column(
-                                                      crossAxisAlignment:
-                                                          CrossAxisAlignment
-                                                              .start,
+                                                      crossAxisAlignment: CrossAxisAlignment.start,
                                                       children: [
                                                         Text(
                                                           fullName,
-                                                          overflow: TextOverflow
-                                                              .ellipsis,
-                                                          style:
-                                                              const TextStyle(
-                                                                fontWeight:
-                                                                    FontWeight
-                                                                        .bold,
-                                                                fontFamily:
-                                                                    'Poppins',
-                                                                color: dark,
-                                                              ),
+                                                          overflow: TextOverflow.ellipsis,
+                                                          style: GoogleFonts.poppins(
+                                                            fontWeight: FontWeight.bold,
+                                                            color: dark,
+                                                          ),
                                                         ),
                                                         Text(
                                                           c['email'],
-                                                          overflow: TextOverflow
-                                                              .ellipsis,
-                                                          style:
-                                                              const TextStyle(
-                                                                fontSize: 13,
-                                                                fontFamily:
-                                                                    'Poppins',
-                                                                color: dark,
-                                                              ),
+                                                          overflow: TextOverflow.ellipsis,
+                                                          style: GoogleFonts.poppins(
+                                                            fontSize: 13,
+                                                            color: dark,
+                                                          ),
                                                         ),
                                                       ],
                                                     ),
                                                   ),
                                                 ],
                                               ),
-                                              const SizedBox(height: 16),
+                                              const SizedBox(height: 8),
+                                              Text(
+                                                'Department: ${department.isEmpty ? "N/A" : department}',
+                                                style: GoogleFonts.poppins(
+                                                  fontSize: 13,
+                                                  color: dark,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 8),
                                               Text(
                                                 'Date Created: $joinedDate',
-                                                style: const TextStyle(
+                                                style: GoogleFonts.poppins(
                                                   fontSize: 13,
-                                                  fontFamily: 'Poppins',
                                                   color: dark,
                                                 ),
                                               ),
@@ -699,122 +1473,80 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                                                         showDialog(
                                                           context: context,
                                                           builder: (context) {
-                                                            final firstName =
-                                                                c['firstName'] ??
-                                                                '';
-                                                            final lastName =
-                                                                c['lastName'] ??
-                                                                '';
-                                                            final fullName =
-                                                                '$firstName $lastName'
-                                                                    .trim();
-
-                                                            String phoneNumber =
-                                                                c['phonenumber'] ??
-                                                                '';
-                                                            if (phoneNumber
-                                                                    .isNotEmpty &&
-                                                                !phoneNumber
-                                                                    .startsWith(
-                                                                      '+63',
-                                                                    )) {
-                                                              phoneNumber =
-                                                                  '+63$phoneNumber';
+                                                            final firstName = c['firstName'] ?? '';
+                                                            final lastName = c['lastName'] ?? '';
+                                                            final fullName = '$firstName $lastName'.trim();
+                                                            final dept = c['department'] ?? '';
+                                                            String phoneNumber = c['phonenumber'] ?? '';
+                                                            if (phoneNumber.isNotEmpty && !phoneNumber.startsWith('+63')) {
+                                                              phoneNumber = '+63$phoneNumber';
                                                             }
-
                                                             return Dialog(
                                                               shape: RoundedRectangleBorder(
-                                                                borderRadius:
-                                                                    BorderRadius.circular(
-                                                                      16,
-                                                                    ),
+                                                                borderRadius: BorderRadius.circular(16),
                                                               ),
                                                               child: Container(
                                                                 width: 400,
-                                                                padding:
-                                                                    const EdgeInsets.all(
-                                                                      24,
-                                                                    ),
+                                                                padding: const EdgeInsets.all(24),
                                                                 decoration: BoxDecoration(
-                                                                  color: Colors
-                                                                      .white,
-                                                                  borderRadius:
-                                                                      BorderRadius.circular(
-                                                                        16,
-                                                                      ),
+                                                                  color: Colors.white,
+                                                                  borderRadius: BorderRadius.circular(16),
                                                                 ),
                                                                 child: Column(
-                                                                  mainAxisSize:
-                                                                      MainAxisSize
-                                                                          .min,
+                                                                  mainAxisSize: MainAxisSize.min,
                                                                   children: [
                                                                     const CircleAvatar(
-                                                                      radius:
-                                                                          35,
-                                                                      backgroundImage:
-                                                                          AssetImage(
-                                                                            'assets/images/defaultDP.jpg',
-                                                                          ),
+                                                                      radius: 35,
+                                                                      backgroundImage: AssetImage('assets/images/defaultDP.jpg'),
                                                                     ),
-                                                                    const SizedBox(
-                                                                      height:
-                                                                          12,
-                                                                    ),
+                                                                    const SizedBox(height: 12),
                                                                     Text(
                                                                       fullName,
-                                                                      style: const TextStyle(
-                                                                        fontWeight:
-                                                                            FontWeight.bold,
-                                                                        fontSize:
-                                                                            18,
-                                                                        fontFamily:
-                                                                            'Poppins',
-                                                                        color:
-                                                                            dark,
+                                                                      style: GoogleFonts.poppins(
+                                                                        fontWeight: FontWeight.bold,
+                                                                        fontSize: 18,
+                                                                        color: dark,
                                                                       ),
                                                                     ),
-                                                                    const SizedBox(
-                                                                      height: 4,
-                                                                    ),
+                                                                    const SizedBox(height: 4),
                                                                     Text(
-                                                                      c['email'] ??
-                                                                          '',
-                                                                      style: const TextStyle(
-                                                                        fontSize:
-                                                                            13,
-                                                                        color:
-                                                                            dark,
-                                                                        fontFamily:
-                                                                            'Poppins',
+                                                                      c['email'] ?? '',
+                                                                      style: GoogleFonts.poppins(
+                                                                        fontSize: 13,
+                                                                        color: dark,
                                                                       ),
                                                                     ),
-                                                                    const Divider(
-                                                                      height:
-                                                                          30,
+                                                                    const Divider(height: 30),
+                                                                    _buildProfileRow("First Name", firstName),
+                                                                    _buildProfileRow("Last Name", lastName),
+                                                                    Padding(
+                                                                      padding: const EdgeInsets.symmetric(vertical: 8),
+                                                                      child: Row(
+                                                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                                                        children: [
+                                                                          Text(
+                                                                            "Department",
+                                                                            style: GoogleFonts.poppins(
+                                                                              fontSize: 14,
+                                                                              color: dark,
+                                                                            ),
+                                                                          ),
+                                                                          Flexible(
+                                                                            child: Text(
+                                                                              dept.isEmpty ? 'N/A' : dept,
+                                                                              style: GoogleFonts.poppins(
+                                                                                fontSize: 14,
+                                                                                color: dark,
+                                                                              ),
+                                                                              maxLines: 1,
+                                                                              overflow: TextOverflow.ellipsis,
+                                                                            ),
+                                                                          ),
+                                                                        ],
+                                                                      ),
                                                                     ),
-                                                                    _buildProfileRow(
-                                                                      "First Name",
-                                                                      firstName,
-                                                                    ),
-                                                                    _buildProfileRow(
-                                                                      "Last Name",
-                                                                      lastName,
-                                                                    ),
-                                                                    _buildProfileRow(
-                                                                      "Username",
-                                                                      c['username'],
-                                                                    ),
-                                                                    _buildProfileRow(
-                                                                      "Mobile Number",
-                                                                      phoneNumber
-                                                                              .isEmpty
-                                                                          ? 'Add number'
-                                                                          : phoneNumber,
-                                                                    ),
-                                                                    _buildProfileRow(
-                                                                      "Date Created",
-                                                                      c['date'],
-                                                                    ),
+                                                                    _buildProfileRow("Mobile Number", phoneNumber.isEmpty ? 'Add number' : phoneNumber),
+                                                                    _buildProfileRow("Date Created", c['date']),
                                                                   ],
                                                                 ),
                                                               ),
@@ -822,236 +1554,49 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                                                           },
                                                         );
                                                       },
-                                                      icon: const Icon(
-                                                        Icons.visibility,
-                                                        size: 16,
-                                                      ),
-                                                      label: const Text('View'),
+                                                      icon: Icon(Icons.visibility, size: 16),
+                                                      label: Text('View', style: GoogleFonts.poppins()),
                                                       style: ElevatedButton.styleFrom(
-                                                        backgroundColor:
-                                                            const Color(
-                                                              0xFFD88C1B,
-                                                            ),
-                                                        foregroundColor:
-                                                            Colors.white,
-                                                        shape: RoundedRectangleBorder(
-                                                          borderRadius:
-                                                              BorderRadius.circular(
-                                                                12,
-                                                              ),
-                                                        ),
-                                                        padding:
-                                                            const EdgeInsets.symmetric(
-                                                              vertical: 14,
-                                                            ),
-                                                        textStyle:
-                                                            const TextStyle(
-                                                              fontFamily:
-                                                                  'Poppins',
-                                                            ),
+                                                        backgroundColor: const Color(0xFFD88C1B),
+                                                        foregroundColor: Colors.white,
+                                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                                        padding: const EdgeInsets.symmetric(vertical: 14),
+                                                        textStyle: GoogleFonts.poppins(),
                                                       ),
                                                     ),
                                                   ),
-                                                  const SizedBox(width: 12),
+                                                  const SizedBox(width: 8),
+                                                  if (c['status'] != 'active')
+                                                    Expanded(
+                                                      child: ElevatedButton.icon(
+                                                        onPressed: () async {
+                                                          await _approveAdmin(c['uid'], c['name'] ?? '');
+                                                        },
+                                                        icon: Icon(Icons.check_circle, size: 16),
+                                                        label: Text('Approve', style: GoogleFonts.poppins()),
+                                                        style: ElevatedButton.styleFrom(
+                                                          backgroundColor: Colors.green[700],
+                                                          foregroundColor: Colors.white,
+                                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                                          padding: const EdgeInsets.symmetric(vertical: 14),
+                                                          textStyle: GoogleFonts.poppins(),
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  if (c['status'] != 'active') const SizedBox(width: 8),
                                                   Expanded(
                                                     child: ElevatedButton.icon(
                                                       onPressed: () async {
-                                                        final confirmed = await showDialog<bool>(
-                                                          context: context,
-                                                          builder: (context) => AlertDialog(
-                                                            backgroundColor:
-                                                                lightBackground,
-                                                            shape: RoundedRectangleBorder(
-                                                              borderRadius:
-                                                                  BorderRadius.circular(
-                                                                    14,
-                                                                  ),
-                                                            ),
-                                                            title: const Text(
-                                                              'Delete Admin Account?',
-                                                              style: TextStyle(
-                                                                color:
-                                                                    primarycolordark,
-                                                                fontWeight:
-                                                                    FontWeight
-                                                                        .bold,
-                                                                fontFamily:
-                                                                    'Poppins',
-                                                              ),
-                                                            ),
-                                                            content: Text(
-                                                              'Are you sure you want to delete admin ${c['name']}? This will permanently remove access to the Admin Management Page.',
-                                                              style:
-                                                                  const TextStyle(
-                                                                    color: dark,
-                                                                    fontFamily:
-                                                                        'Poppins',
-                                                                  ),
-                                                            ),
-                                                            actions: [
-                                                              TextButton(
-                                                                onPressed: () =>
-                                                                    Navigator.pop(
-                                                                      context,
-                                                                      false,
-                                                                    ),
-                                                                style: TextButton.styleFrom(
-                                                                  foregroundColor:
-                                                                      primarycolordark,
-                                                                  textStyle: const TextStyle(
-                                                                    fontFamily:
-                                                                        'Poppins',
-                                                                  ),
-                                                                ),
-                                                                child:
-                                                                    const Text(
-                                                                      'Cancel',
-                                                                    ),
-                                                              ),
-                                                              TextButton(
-                                                                onPressed: () =>
-                                                                    Navigator.pop(
-                                                                      context,
-                                                                      true,
-                                                                    ),
-                                                                style: TextButton.styleFrom(
-                                                                  backgroundColor:
-                                                                      primarycolordark,
-                                                                  foregroundColor:
-                                                                      Colors
-                                                                          .white,
-                                                                  textStyle: const TextStyle(
-                                                                    fontWeight:
-                                                                        FontWeight
-                                                                            .bold,
-                                                                    fontFamily:
-                                                                        'Poppins',
-                                                                  ),
-                                                                ),
-                                                                child: const Text(
-                                                                  'Confirm Delete',
-                                                                ),
-                                                              ),
-                                                            ],
-                                                          ),
-                                                        );
-
-                                                        if (confirmed == true) {
-                                                          try {
-                                                            final email =
-                                                                c['email'];
-                                                            final uid =
-                                                                c['uid'];
-
-                                                            // Delete Firestore document
-                                                            final snapshot =
-                                                                await FirebaseFirestore
-                                                                    .instance
-                                                                    .collection(
-                                                                      'Admin',
-                                                                    )
-                                                                    .where(
-                                                                      'email',
-                                                                      isEqualTo:
-                                                                          email,
-                                                                    )
-                                                                    .limit(1)
-                                                                    .get();
-
-                                                            if (snapshot
-                                                                .docs
-                                                                .isNotEmpty) {
-                                                              await snapshot
-                                                                  .docs
-                                                                  .first
-                                                                  .reference
-                                                                  .delete();
-                                                            }
-
-                                                            // Delete Firebase Auth user (only works if currently authenticated user is same or re-authenticated)
-                                                            final user =
-                                                                FirebaseAuth
-                                                                    .instance
-                                                                    .currentUser;
-
-                                                            if (user != null &&
-                                                                user.uid ==
-                                                                    uid) {
-                                                              await user
-                                                                  .delete(); // only deletes own account unless you use Admin SDK
-                                                            } else {
-                                                              print(
-                                                                "Cannot delete other users without Admin SDK or secure backend function.",
-                                                              );
-                                                            }
-
-                                                            ScaffoldMessenger.of(
-                                                              context,
-                                                            ).showSnackBar(
-                                                              SnackBar(
-                                                                content: Text(
-                                                                  "Admin ${c['name']} deleted successfully.",
-                                                                  style: const TextStyle(
-                                                                    color: Colors
-                                                                        .white,
-                                                                  ),
-                                                                ),
-                                                                backgroundColor:
-                                                                    primarycolor,
-                                                                behavior:
-                                                                    SnackBarBehavior
-                                                                        .floating,
-                                                              ),
-                                                            );
-                                                            _loadUserDataList(); // Refresh
-                                                          } catch (e) {
-                                                            print(
-                                                              "Error deleting user: $e",
-                                                            );
-                                                            ScaffoldMessenger.of(
-                                                              context,
-                                                            ).showSnackBar(
-                                                              const SnackBar(
-                                                                content: Text(
-                                                                  "Failed to delete admin.",
-                                                                ),
-                                                                backgroundColor:
-                                                                    Colors.red,
-                                                                behavior:
-                                                                    SnackBarBehavior
-                                                                        .floating,
-                                                              ),
-                                                            );
-                                                          }
-                                                        }
+                                                        await _deleteAdmin(c['uid'], c['name'] ?? '');
                                                       },
-                                                      icon: const Icon(
-                                                        Icons.delete,
-                                                        size: 16,
-                                                      ),
-                                                      label: const Text(
-                                                        'Delete',
-                                                      ),
+                                                      icon: Icon(Icons.delete, size: 16),
+                                                      label: Text('Delete', style: GoogleFonts.poppins()),
                                                       style: ElevatedButton.styleFrom(
-                                                        backgroundColor:
-                                                            secondarycolor,
-                                                        foregroundColor:
-                                                            Colors.white,
-                                                        shape: RoundedRectangleBorder(
-                                                          borderRadius:
-                                                              BorderRadius.circular(
-                                                                12,
-                                                              ),
-                                                        ),
-                                                        padding:
-                                                            const EdgeInsets.symmetric(
-                                                              vertical: 14,
-                                                            ),
-                                                        textStyle:
-                                                            const TextStyle(
-                                                              fontFamily:
-                                                                  'Poppins',
-                                                            ),
+                                                        backgroundColor: secondarycolor,
+                                                        foregroundColor: Colors.white,
+                                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                                        padding: const EdgeInsets.symmetric(vertical: 14),
+                                                        textStyle: GoogleFonts.poppins(),
                                                       ),
                                                     ),
                                                   ),
@@ -1059,35 +1604,21 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                                               ),
                                             ],
                                           ),
-
                                           Align(
                                             alignment: Alignment.topRight,
                                             child: Container(
-                                              margin: const EdgeInsets.only(
-                                                top: 4,
-                                                right: 4,
-                                              ),
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 10,
-                                                    vertical: 6,
-                                                  ),
+                                              margin: const EdgeInsets.only(top: 4, right: 4),
+                                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                                               decoration: BoxDecoration(
-                                                color: c['status'] == 'active'
-                                                    ? Colors.green[100]
-                                                    : Colors.red[100],
-                                                borderRadius:
-                                                    BorderRadius.circular(20),
+                                                color: c['status'] == 'active' ? Colors.green[100] : Colors.red[100],
+                                                borderRadius: BorderRadius.circular(20),
                                               ),
                                               child: Text(
-                                                c['status'].toUpperCase(),
-                                                style: TextStyle(
+                                                _displayStatusLabel(c['status']),
+                                                style: GoogleFonts.poppins(
                                                   fontSize: 12,
                                                   fontWeight: FontWeight.bold,
-                                                  color: c['status'] == 'active'
-                                                      ? Colors.green[800]
-                                                      : Colors.red[800],
-                                                  fontFamily: 'Poppins',
+                                                  color: c['status'] == 'active' ? Colors.green[800] : Colors.red[800],
                                                 ),
                                               ),
                                             ),
@@ -1099,34 +1630,24 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                                           Expanded(
                                             flex: 2,
                                             child: Padding(
-                                              padding: const EdgeInsets.only(
-                                                left: 40,
-                                              ),
+                                              padding: const EdgeInsets.symmetric(horizontal: 12),
                                               child: Row(
                                                 children: [
                                                   CircleAvatar(
-                                                    backgroundColor:
-                                                        secondarycolor,
+                                                    backgroundColor: secondarycolor,
                                                     child: Text(
-                                                      fullName.isNotEmpty
-                                                          ? fullName[0]
-                                                          : '?',
-                                                      style: const TextStyle(
-                                                        color: Colors.white,
-                                                      ),
+                                                      fullName.isNotEmpty ? fullName[0] : '?',
+                                                      style: GoogleFonts.poppins(color: Colors.white),
                                                     ),
                                                   ),
                                                   const SizedBox(width: 12),
                                                   Expanded(
                                                     child: Text(
                                                       fullName,
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
-                                                      style: const TextStyle(
+                                                      overflow: TextOverflow.ellipsis,
+                                                      style: GoogleFonts.poppins(
                                                         color: dark,
-                                                        fontWeight:
-                                                            FontWeight.bold,
-                                                        fontFamily: 'Poppins',
+                                                        fontWeight: FontWeight.bold,
                                                       ),
                                                     ),
                                                   ),
@@ -1140,10 +1661,17 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                                               child: Text(
                                                 c['email'],
                                                 overflow: TextOverflow.ellipsis,
-                                                style: const TextStyle(
-                                                  fontFamily: 'Poppins',
-                                                  color: dark,
-                                                ),
+                                                style: GoogleFonts.poppins(color: dark),
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            flex: 2,
+                                            child: Center(
+                                              child: Text(
+                                                department.isEmpty ? 'N/A' : department,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: GoogleFonts.poppins(color: dark),
                                               ),
                                             ),
                                           ),
@@ -1152,10 +1680,7 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                                             child: Center(
                                               child: Text(
                                                 joinedDate,
-                                                style: const TextStyle(
-                                                  fontFamily: 'Poppins',
-                                                  color: dark,
-                                                ),
+                                                style: GoogleFonts.poppins(color: dark),
                                               ),
                                             ),
                                           ),
@@ -1163,30 +1688,17 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                                             flex: 2,
                                             child: Center(
                                               child: Container(
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                      horizontal: 8,
-                                                      vertical: 4,
-                                                    ),
+                                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                                                 decoration: BoxDecoration(
-                                                  color: c['status'] == 'active'
-                                                      ? Colors.green[100]
-                                                      : Colors.red[100],
-                                                  borderRadius:
-                                                      BorderRadius.circular(8),
+                                                  color: c['status'] == 'active' ? Colors.green[100] : Colors.red[100],
+                                                  borderRadius: BorderRadius.circular(8),
                                                 ),
                                                 child: Text(
-                                                  c['status']
-                                                      .toString()
-                                                      .toUpperCase(),
-                                                  style: TextStyle(
+                                                  c['status'].toString().toUpperCase(),
+                                                  style: GoogleFonts.poppins(
                                                     fontWeight: FontWeight.bold,
                                                     fontSize: 12,
-                                                    color:
-                                                        c['status'] == 'active'
-                                                        ? Colors.green[800]
-                                                        : Colors.red[800],
-                                                    fontFamily: 'Poppins',
+                                                    color: c['status'] == 'active' ? Colors.green[800] : Colors.red[800],
                                                   ),
                                                 ),
                                               ),
@@ -1195,8 +1707,7 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                                           Expanded(
                                             flex: 3,
                                             child: Row(
-                                              mainAxisAlignment:
-                                                  MainAxisAlignment.center,
+                                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                               children: [
                                                 Expanded(
                                                   child: ElevatedButton.icon(
@@ -1204,121 +1715,65 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                                                       showDialog(
                                                         context: context,
                                                         builder: (context) {
-                                                          final firstName =
-                                                              c['firstName'] ??
-                                                              '';
-                                                          final lastName =
-                                                              c['lastName'] ??
-                                                              '';
-                                                          final fullName =
-                                                              '$firstName $lastName'
-                                                                  .trim();
-
-                                                          String phoneNumber =
-                                                              c['phonenumber'] ??
-                                                              '';
-                                                          if (phoneNumber
-                                                                  .isNotEmpty &&
-                                                              !phoneNumber
-                                                                  .startsWith(
-                                                                    '+63',
-                                                                  )) {
-                                                            phoneNumber =
-                                                                '+63$phoneNumber';
+                                                          final firstName = c['firstName'] ?? '';
+                                                          final lastName = c['lastName'] ?? '';
+                                                          final fullName = '$firstName $lastName'.trim();
+                                                          final dept = c['department'] ?? '';
+                                                          String phoneNumber = c['phonenumber'] ?? '';
+                                                          if (phoneNumber.isNotEmpty && !phoneNumber.startsWith('+63')) {
+                                                            phoneNumber = '+63$phoneNumber';
                                                           }
-
                                                           return Dialog(
-                                                            shape: RoundedRectangleBorder(
-                                                              borderRadius:
-                                                                  BorderRadius.circular(
-                                                                    16,
-                                                                  ),
-                                                            ),
+                                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                                                             child: Container(
                                                               width: 400,
-                                                              padding:
-                                                                  const EdgeInsets.all(
-                                                                    24,
-                                                                  ),
-                                                              decoration:
-                                                                  BoxDecoration(
-                                                                    color: Colors
-                                                                        .white,
-                                                                    borderRadius:
-                                                                        BorderRadius.circular(
-                                                                          16,
-                                                                        ),
-                                                                  ),
+                                                              padding: const EdgeInsets.all(24),
+                                                              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
                                                               child: Column(
-                                                                mainAxisSize:
-                                                                    MainAxisSize
-                                                                        .min,
+                                                                mainAxisSize: MainAxisSize.min,
                                                                 children: [
-                                                                  const CircleAvatar(
-                                                                    radius: 35,
-                                                                    backgroundImage:
-                                                                        AssetImage(
-                                                                          'assets/images/defaultDP.jpg',
-                                                                        ),
-                                                                  ),
-                                                                  const SizedBox(
-                                                                    height: 12,
-                                                                  ),
+                                                                  const CircleAvatar(radius: 35, backgroundImage: AssetImage('assets/images/defaultDP.jpg')),
+                                                                  const SizedBox(height: 12),
                                                                   Text(
                                                                     fullName,
-                                                                    style: const TextStyle(
-                                                                      fontWeight:
-                                                                          FontWeight
-                                                                              .bold,
-                                                                      fontSize:
-                                                                          18,
-                                                                      fontFamily:
-                                                                          'Poppins',
-                                                                      color:
-                                                                          dark,
-                                                                    ),
+                                                                    style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 18, color: dark),
                                                                   ),
-                                                                  const SizedBox(
-                                                                    height: 4,
-                                                                  ),
+                                                                  const SizedBox(height: 4),
                                                                   Text(
-                                                                    c['email'] ??
-                                                                        '',
-                                                                    style: const TextStyle(
-                                                                      fontSize:
-                                                                          13,
-                                                                      color:
-                                                                          dark,
-                                                                      fontFamily:
-                                                                          'Poppins',
+                                                                    c['email'] ?? '',
+                                                                    style: GoogleFonts.poppins(fontSize: 13, color: dark),
+                                                                  ),
+                                                                  const Divider(height: 30),
+                                                                  _buildProfileRow("First Name", firstName),
+                                                                  _buildProfileRow("Last Name", lastName),
+                                                                  Padding(
+                                                                    padding: const EdgeInsets.symmetric(vertical: 8),
+                                                                    child: Row(
+                                                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                                                      children: [
+                                                                        Text(
+                                                                          "Department",
+                                                                          style: GoogleFonts.poppins(
+                                                                            fontSize: 14,
+                                                                            color: dark,
+                                                                          ),
+                                                                        ),
+                                                                        Flexible(
+                                                                          child: Text(
+                                                                            dept.isEmpty ? 'N/A' : dept,
+                                                                            style: GoogleFonts.poppins(
+                                                                              fontSize: 14,
+                                                                              color: dark,
+                                                                            ),
+                                                                            maxLines: 1,
+                                                                            overflow: TextOverflow.ellipsis,
+                                                                          ),
+                                                                        ),
+                                                                      ],
                                                                     ),
                                                                   ),
-                                                                  const Divider(
-                                                                    height: 30,
-                                                                  ),
-                                                                  _buildProfileRow(
-                                                                    "First Name",
-                                                                    firstName,
-                                                                  ),
-                                                                  _buildProfileRow(
-                                                                    "Last Name",
-                                                                    lastName,
-                                                                  ),
-                                                                  _buildProfileRow(
-                                                                    "Username",
-                                                                    c['username'],
-                                                                  ),
-                                                                  _buildProfileRow(
-                                                                    "Mobile Number",
-                                                                    phoneNumber
-                                                                            .isEmpty
-                                                                        ? 'Add number'
-                                                                        : phoneNumber,
-                                                                  ),
-                                                                  _buildProfileRow(
-                                                                    "Date Created",
-                                                                    c['date'],
-                                                                  ),
+                                                                  _buildProfileRow("Mobile Number", phoneNumber.isEmpty ? 'Add number' : phoneNumber),
+                                                                  _buildProfileRow("Date Created", c['date']),
                                                                 ],
                                                               ),
                                                             ),
@@ -1326,232 +1781,49 @@ class _AdminManagementPageState extends State<AdminManagementPage> {
                                                         },
                                                       );
                                                     },
-                                                    icon: const Icon(
-                                                      Icons.visibility,
-                                                      size: 16,
-                                                    ),
-                                                    label: const Text('View'),
+                                                    icon: Icon(Icons.visibility, size: 16),
+                                                    label: Text('View', style: GoogleFonts.poppins()),
                                                     style: ElevatedButton.styleFrom(
-                                                      backgroundColor:
-                                                          const Color(
-                                                            0xFFD88C1B,
-                                                          ),
-                                                      foregroundColor:
-                                                          Colors.white,
-                                                      shape: RoundedRectangleBorder(
-                                                        borderRadius:
-                                                            BorderRadius.circular(
-                                                              12,
-                                                            ),
-                                                      ),
-                                                      padding:
-                                                          const EdgeInsets.symmetric(
-                                                            vertical: 12,
-                                                          ),
-                                                      textStyle:
-                                                          const TextStyle(
-                                                            fontFamily:
-                                                                'Poppins',
-                                                          ),
+                                                      backgroundColor: const Color(0xFFD88C1B),
+                                                      foregroundColor: Colors.white,
+                                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                                      padding: const EdgeInsets.symmetric(vertical: 12),
+                                                      textStyle: GoogleFonts.poppins(),
                                                     ),
                                                   ),
                                                 ),
                                                 const SizedBox(width: 8),
+                                                if (c['status'] != 'active')
+                                                  Expanded(
+                                                    child: ElevatedButton.icon(
+                                                      onPressed: () async {
+                                                        await _approveAdmin(c['uid'], c['name'] ?? '');
+                                                      },
+                                                      icon: Icon(Icons.check_circle, size: 16),
+                                                      label: Text('Approve', style: GoogleFonts.poppins()),
+                                                      style: ElevatedButton.styleFrom(
+                                                        backgroundColor: Colors.green[700],
+                                                        foregroundColor: Colors.white,
+                                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                                        padding: const EdgeInsets.symmetric(vertical: 12),
+                                                        textStyle: GoogleFonts.poppins(),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                if (c['status'] != 'active') const SizedBox(width: 8),
                                                 Expanded(
                                                   child: ElevatedButton.icon(
                                                     onPressed: () async {
-                                                      final confirmed = await showDialog<bool>(
-                                                        context: context,
-                                                        builder: (context) => AlertDialog(
-                                                          backgroundColor:
-                                                              lightBackground,
-                                                          shape: RoundedRectangleBorder(
-                                                            borderRadius:
-                                                                BorderRadius.circular(
-                                                                  14,
-                                                                ),
-                                                          ),
-                                                          title: const Text(
-                                                            'Delete Admin Account?',
-                                                            style: TextStyle(
-                                                              color:
-                                                                  primarycolordark,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .bold,
-                                                              fontFamily:
-                                                                  'Poppins',
-                                                            ),
-                                                          ),
-                                                          content: Text(
-                                                            'Are you sure you want to delete admin ${c['name']}? This will permanently remove access to the Admin Management Page.',
-                                                            style:
-                                                                const TextStyle(
-                                                                  color: dark,
-                                                                  fontFamily:
-                                                                      'Poppins',
-                                                                ),
-                                                          ),
-                                                          actions: [
-                                                            TextButton(
-                                                              onPressed: () =>
-                                                                  Navigator.pop(
-                                                                    context,
-                                                                    false,
-                                                                  ),
-                                                              style: TextButton.styleFrom(
-                                                                foregroundColor:
-                                                                    primarycolordark,
-                                                                textStyle:
-                                                                    const TextStyle(
-                                                                      fontFamily:
-                                                                          'Poppins',
-                                                                    ),
-                                                              ),
-                                                              child: const Text(
-                                                                'Cancel',
-                                                              ),
-                                                            ),
-                                                            TextButton(
-                                                              onPressed: () =>
-                                                                  Navigator.pop(
-                                                                    context,
-                                                                    true,
-                                                                  ),
-                                                              style: TextButton.styleFrom(
-                                                                backgroundColor:
-                                                                    primarycolordark,
-                                                                foregroundColor:
-                                                                    Colors
-                                                                        .white,
-                                                                textStyle: const TextStyle(
-                                                                  fontWeight:
-                                                                      FontWeight
-                                                                          .bold,
-                                                                  fontFamily:
-                                                                      'Poppins',
-                                                                ),
-                                                              ),
-                                                              child: const Text(
-                                                                'Confirm Delete',
-                                                              ),
-                                                            ),
-                                                          ],
-                                                        ),
-                                                      );
-
-                                                      if (confirmed == true) {
-                                                        try {
-                                                          final email =
-                                                              c['email'];
-                                                          final uid = c['uid'];
-
-                                                          // Delete Firestore document
-                                                          final snapshot =
-                                                              await FirebaseFirestore
-                                                                  .instance
-                                                                  .collection(
-                                                                    'Admin',
-                                                                  )
-                                                                  .where(
-                                                                    'email',
-                                                                    isEqualTo:
-                                                                        email,
-                                                                  )
-                                                                  .limit(1)
-                                                                  .get();
-
-                                                          if (snapshot
-                                                              .docs
-                                                              .isNotEmpty) {
-                                                            await snapshot
-                                                                .docs
-                                                                .first
-                                                                .reference
-                                                                .delete();
-                                                          }
-
-                                                          // Delete Firebase Auth user (only works if currently authenticated user is same or re-authenticated)
-                                                          final user =
-                                                              FirebaseAuth
-                                                                  .instance
-                                                                  .currentUser;
-
-                                                          if (user != null &&
-                                                              user.uid == uid) {
-                                                            await user
-                                                                .delete(); // only deletes own account unless you use Admin SDK
-                                                          } else {
-                                                            print(
-                                                              "Cannot delete other users without Admin SDK or secure backend function.",
-                                                            );
-                                                          }
-
-                                                          ScaffoldMessenger.of(
-                                                            context,
-                                                          ).showSnackBar(
-                                                            SnackBar(
-                                                              content: Text(
-                                                                "Admin ${c['name']} deleted successfully.",
-                                                                style: const TextStyle(
-                                                                  color: Colors
-                                                                      .white,
-                                                                ),
-                                                              ),
-                                                              backgroundColor:
-                                                                  primarycolor,
-                                                              behavior:
-                                                                  SnackBarBehavior
-                                                                      .floating,
-                                                            ),
-                                                          );
-                                                          _loadUserDataList(); // Refresh
-                                                        } catch (e) {
-                                                          print(
-                                                            "Error deleting user: $e",
-                                                          );
-                                                          ScaffoldMessenger.of(
-                                                            context,
-                                                          ).showSnackBar(
-                                                            const SnackBar(
-                                                              content: Text(
-                                                                "Failed to delete admin.",
-                                                              ),
-                                                              backgroundColor:
-                                                                  Colors.red,
-                                                              behavior:
-                                                                  SnackBarBehavior
-                                                                      .floating,
-                                                            ),
-                                                          );
-                                                        }
-                                                      }
+                                                      await _deleteAdmin(c['uid'], c['name'] ?? '');
                                                     },
-                                                    icon: const Icon(
-                                                      Icons.delete,
-                                                      size: 16,
-                                                    ),
-                                                    label: const Text('Delete'),
+                                                    icon: Icon(Icons.delete, size: 16),
+                                                    label: Text('Delete', style: GoogleFonts.poppins()),
                                                     style: ElevatedButton.styleFrom(
-                                                      backgroundColor:
-                                                          secondarycolor,
-                                                      foregroundColor:
-                                                          Colors.white,
-                                                      shape: RoundedRectangleBorder(
-                                                        borderRadius:
-                                                            BorderRadius.circular(
-                                                              12,
-                                                            ),
-                                                      ),
-                                                      padding:
-                                                          const EdgeInsets.symmetric(
-                                                            vertical: 12,
-                                                          ),
-                                                      textStyle:
-                                                          const TextStyle(
-                                                            fontFamily:
-                                                                'Poppins',
-                                                          ),
+                                                      backgroundColor: secondarycolor,
+                                                      foregroundColor: Colors.white,
+                                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                                      padding: const EdgeInsets.symmetric(vertical: 12),
+                                                      textStyle: GoogleFonts.poppins(),
                                                     ),
                                                   ),
                                                 ),
@@ -1627,20 +1899,18 @@ class _StatCardState extends State<StatCard> {
           children: [
             Text(
               widget.value,
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 fontSize: 24,
                 fontWeight: FontWeight.bold,
                 color: widget.color,
-                fontFamily: 'Poppins',
               ),
             ),
             const SizedBox(height: 4),
             Text(
               widget.title,
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 fontSize: 14,
                 color: widget.color.withOpacity(0.9),
-                fontFamily: 'Poppins',
               ),
             ),
           ],
@@ -1701,12 +1971,9 @@ class _HoverButtonState extends State<HoverButton> {
 
   @override
   Widget build(BuildContext context) {
-    final Color bgColor = isHovered
-        ? (widget.hoverBackground ?? widget.color)
-        : widget.color;
+    final Color bgColor = isHovered ? (widget.hoverBackground ?? widget.color) : widget.color;
     final Color? fgColor = isHovered
-        ? widget.textHoverColor ??
-              (widget.color == Colors.transparent ? null : Colors.white)
+        ? widget.textHoverColor ?? (widget.color == Colors.transparent ? null : Colors.white)
         : (widget.color == Colors.transparent ? null : Colors.white);
 
     return MouseRegion(
@@ -1724,10 +1991,7 @@ class _HoverButtonState extends State<HoverButton> {
           style: TextButton.styleFrom(
             backgroundColor: Colors.transparent,
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-            textStyle: const TextStyle(
-              fontFamily: 'Poppins',
-              fontWeight: FontWeight.bold,
-            ),
+            textStyle: GoogleFonts.poppins(fontWeight: FontWeight.bold),
             foregroundColor: fgColor,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(8),
@@ -1749,17 +2013,14 @@ class SearchBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return TextField(
       controller: controller,
-      style: const TextStyle(fontFamily: 'Poppins', color: dark),
+      style: GoogleFonts.poppins(color: dark),
       decoration: InputDecoration(
         hintText: 'Search admin...',
-        hintStyle: const TextStyle(color: dark),
+        hintStyle: GoogleFonts.poppins(color: dark),
         prefixIcon: const Icon(Icons.search, color: primarycolor),
         filled: true,
         fillColor: Colors.white,
-        contentPadding: const EdgeInsets.symmetric(
-          vertical: 12,
-          horizontal: 16,
-        ),
+        contentPadding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide: const BorderSide(color: primarycolordark, width: 1.5),
@@ -1797,22 +2058,16 @@ class FilterDropdown extends StatelessWidget {
           value: selectedFilter,
           onChanged: onChanged,
           dropdownColor: lightBackground,
-          style: const TextStyle(fontFamily: 'Poppins', color: dark),
+          style: GoogleFonts.poppins(color: dark),
           icon: const Icon(Icons.filter_list, color: primarycolordark),
-          items: ['All', 'Active', 'Inactive'].map((filter) {
+          items: ['All', 'Active', 'Pending'].map((filter) {
             return DropdownMenuItem<String>(
               value: filter,
               child: MouseRegion(
                 cursor: SystemMouseCursors.click,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 8,
-                    horizontal: 4,
-                  ),
-                  child: Text(
-                    filter,
-                    style: const TextStyle(fontFamily: 'Poppins', color: dark),
-                  ),
+                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                  child: Text(filter, style: GoogleFonts.poppins(color: dark)),
                 ),
               ),
             );
@@ -1825,7 +2080,7 @@ class FilterDropdown extends StatelessWidget {
 
 class NavigationDrawer extends StatelessWidget {
   final String? applicationLogoUrl;
-  final String activePage; // 👈 NEW: keeps track of which page is active
+  final String activePage;
 
   const NavigationDrawer({
     super.key,
@@ -1842,8 +2097,7 @@ class NavigationDrawer extends StatelessWidget {
           DrawerHeader(
             decoration: const BoxDecoration(color: lightBackground),
             child: Center(
-              child:
-                  applicationLogoUrl != null && applicationLogoUrl!.isNotEmpty
+              child: applicationLogoUrl != null && applicationLogoUrl!.isNotEmpty
                   ? Image.network(
                       applicationLogoUrl!,
                       height: double.infinity,
@@ -1863,85 +2117,66 @@ class NavigationDrawer extends StatelessWidget {
           ),
           _drawerItem(context, Icons.dashboard_outlined, "Dashboard", () {
             Navigator.pop(context);
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => const SuperAdminDashboardPage(),
-              ),
-            );
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const SuperAdminDashboardPage()));
           }),
           _drawerItem(context, Icons.people_outline, "Users Info", () {
             Navigator.pop(context);
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const UserinfoPage()),
-            );
-          }),
-          _drawerItem(context, Icons.chat_outlined, "Chat Logs", () {
-            Navigator.pop(context);
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const ChatsPage()),
-            );
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const UserinfoPage()));
           }),
           _drawerItem(context, Icons.feedback_outlined, "Feedbacks", () {
             Navigator.pop(context);
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const FeedbacksPage()),
-            );
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const FeedbacksPage()));
           }),
-          _drawerItem(
-            context,
-            Icons.admin_panel_settings_outlined,
-            "Admin Management",
-            () {
-              Navigator.pop(context);
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const AdminManagementPage()),
-              );
-            },
-          ),
-          _drawerItem(context, Icons.receipt_long_outlined, "Audit Logs", () {
+          _drawerItem(context, Icons.admin_panel_settings_outlined, "Admin Management", () {
             Navigator.pop(context);
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const AuditLogsPage()),
-            );
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminManagementPage()));
           }),
+          // _drawerItem(context,Icons.warning_amber_rounded, "Emergency Requests", () {
+          //   Navigator.pop(context);
+          //   Navigator.push( context, MaterialPageRoute(builder: (_) => const EmergencyRequestsPage()),);
+          // },),
           _drawerItem(context, Icons.settings_outlined, "Settings", () {
             Navigator.pop(context);
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const SystemSettingsPage()),
-            );
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const SystemSettingsPage()));
+          }),
+          _drawerItem(context, Icons.receipt_long_outlined, "Audit Logs", () {
+            Navigator.pop(context);
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const AuditLogsPage()));
           }),
           const Spacer(),
-          _drawerItem(context, Icons.logout, "Logout", () {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (_) => const AdminLoginPage()),
-            );
-          }, isLogout: true),
+          _drawerItem(
+            context,
+            Icons.logout,
+            "Logout",
+            () async {
+              try {
+                await FirebaseAuth.instance.signOut();
+                Navigator.pushAndRemoveUntil(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AdminLoginPage()),
+                  (route) => false,
+                );
+              } catch (e) {
+                print("Logout error: $e");
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text("Logout failed. Please try again.", style: GoogleFonts.poppins())),
+                );
+              }
+            },
+            isLogout: true,
+          ),
         ],
       ),
     );
   }
 
-  Widget _drawerItem(
-    BuildContext context,
-    IconData icon,
-    String title,
-    VoidCallback onTap, {
-    bool isLogout = false,
-  }) {
+  Widget _drawerItem(BuildContext context, IconData icon, String title, VoidCallback onTap, {bool isLogout = false}) {
     return _DrawerHoverButton(
       icon: icon,
       title: title,
       onTap: onTap,
       isLogout: isLogout,
-      isActive: activePage == title, // 👈 highlight if current page
+      isActive: activePage == title,
     );
   }
 }
@@ -1971,13 +2206,9 @@ class _DrawerHoverButtonState extends State<_DrawerHoverButton> {
 
   @override
   Widget build(BuildContext context) {
-    final bgColor = widget.isActive
-        ? primarycolor.withOpacity(0.25) // 👈 active state
-        : (isHovered ? primarycolor.withOpacity(0.10) : Colors.transparent);
+    final bgColor = widget.isActive ? primarycolor.withOpacity(0.25) : (isHovered ? primarycolor.withOpacity(0.10) : Colors.transparent);
 
-    final textColor = widget.isLogout
-        ? Colors.red
-        : (widget.isActive ? primarycolordark : primarycolordark);
+    final textColor = widget.isLogout ? Colors.red : (widget.isActive ? primarycolordark : primarycolordark);
 
     return MouseRegion(
       cursor: SystemMouseCursors.click,
@@ -1994,10 +2225,9 @@ class _DrawerHoverButtonState extends State<_DrawerHoverButton> {
           leading: Icon(widget.icon, color: textColor),
           title: Text(
             widget.title,
-            style: TextStyle(
+            style: GoogleFonts.poppins(
               color: textColor,
               fontWeight: widget.isActive ? FontWeight.bold : FontWeight.w600,
-              fontFamily: 'Poppins',
             ),
           ),
           onTap: widget.onTap,

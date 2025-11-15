@@ -1,8 +1,12 @@
+import 'dart:convert';
+import 'package:encrypt/encrypt.dart' as encrypt;
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:lottie/lottie.dart';
 import 'package:intl/intl.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:chatbot/adminlogin.dart';
 import 'package:chatbot/superadmin/dashboard.dart';
 import 'package:chatbot/superadmin/adminmanagement.dart';
@@ -11,6 +15,7 @@ import 'package:chatbot/superadmin/chatlogs.dart';
 import 'package:chatbot/superadmin/feedbacks.dart';
 import 'package:chatbot/superadmin/settings.dart';
 import 'package:chatbot/superadmin/profile.dart';
+import 'package:chatbot/superadmin/emergencypage.dart';
 
 const primarycolor = Color(0xFFffc803);
 const primarycolordark = Color(0xFF550100);
@@ -54,6 +59,9 @@ class _ProfileButtonState extends State<ProfileButton> {
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isSmallScreen = screenWidth < 600;
+
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => isHovered = true),
@@ -67,46 +75,44 @@ class _ProfileButtonState extends State<ProfileButton> {
           margin: const EdgeInsets.only(right: 12),
           padding: const EdgeInsets.symmetric(horizontal: 14),
           decoration: BoxDecoration(
-            color: isHovered
-                ? Colors.grey.withOpacity(0.15)
-                : Colors.transparent,
+            color: isHovered ? Colors.grey.withOpacity(0.15) : Colors.transparent,
             borderRadius: BorderRadius.circular(15),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircleAvatar(
-                radius: 18,
-                backgroundImage: widget.imageUrl.startsWith('http')
-                    ? NetworkImage(widget.imageUrl)
-                    : AssetImage(widget.imageUrl) as ImageProvider,
-                backgroundColor: Colors.grey[200],
-              ),
-              const SizedBox(width: 10),
-              Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.name,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: dark,
-                      fontFamily: 'Poppins',
+          child: isSmallScreen
+              ? CircleAvatar(
+                  radius: 18,
+                  backgroundImage: widget.imageUrl.startsWith('http')
+                      ? NetworkImage(widget.imageUrl)
+                      : AssetImage(widget.imageUrl) as ImageProvider,
+                  backgroundColor: Colors.grey[200],
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircleAvatar(
+                      radius: 18,
+                      backgroundImage: widget.imageUrl.startsWith('http')
+                          ? NetworkImage(widget.imageUrl)
+                          : AssetImage(widget.imageUrl) as ImageProvider,
+                      backgroundColor: Colors.grey[200],
                     ),
-                  ),
-                  Text(
-                    widget.role,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: dark,
-                      fontFamily: 'Poppins',
+                    const SizedBox(width: 10),
+                    Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.name,
+                          style: GoogleFonts.poppins(fontWeight: FontWeight.bold, color: dark),
+                        ),
+                        Text(
+                          widget.role,
+                          style: GoogleFonts.poppins(fontSize: 12, color: dark),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
-            ],
-          ),
+                  ],
+                ),
         ),
       ),
     );
@@ -128,6 +134,7 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
   String? selectedAction;
   String firstName = "";
   String lastName = "";
+  String userRole = 'Super Admin';
   String profilePictureUrl = "assets/images/defaultDP.jpg";
   String? selectedUser;
   DateTime? selectedDate;
@@ -136,15 +143,17 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
   bool _actionChoicesLoaded = false;
   bool _logsCountLoaded = false;
 
-  // For Application Logo
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  static const String _aesKeyStorageKey = 'app_aes_key_v1';
+  encrypt.Key? _cachedKey;
+  
+  final Map<String, String> _emailCache = {};
+
   String? _applicationLogoUrl;
   bool _logoLoaded = false;
 
   bool get _allDataLoaded =>
-      _adminInfoLoaded &&
-      _actionChoicesLoaded &&
-      _logsCountLoaded &&
-      _logoLoaded;
+      _adminInfoLoaded && _actionChoicesLoaded && _logsCountLoaded && _logoLoaded;
 
   @override
   void initState() {
@@ -152,21 +161,131 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
     _initializePage();
   }
 
+  @override
+  void dispose() {
+    _emailCache.clear();
+    super.dispose();
+  }
+
   Future<void> _initializePage() async {
     await Future.wait([
-      _loadSuperAdminInfo(),
+      _loadUserInfo(),
       _loadActionChoices(),
       _countLogs(),
       _loadApplicationLogo(),
     ]);
   }
 
-  Future<void> _loadApplicationLogo() async {
+  Future<encrypt.Key?> _getOrCreateAesKey() async {
+    if (_cachedKey != null) return _cachedKey!;
+    
     try {
       final doc = await FirebaseFirestore.instance
           .collection('SystemSettings')
-          .doc('global')
+          .doc('encryption_key')
           .get();
+      
+      if (doc.exists && doc.data()?['key'] != null) {
+        final keyBase64 = doc.data()!['key'] as String;
+        final keyBytes = base64Decode(keyBase64);
+        
+        await _secureStorage.write(
+          key: _aesKeyStorageKey,
+          value: keyBase64,
+          aOptions: const AndroidOptions(encryptedSharedPreferences: true),
+          iOptions: const IOSOptions(),
+        );
+        
+        _cachedKey = encrypt.Key(keyBytes);
+        print('✅ AuditLogs: Loaded encryption key from Firestore');
+        return _cachedKey!;
+      }
+    } catch (e) {
+      print('⚠️ AuditLogs: Error loading key from Firestore: $e');
+    }
+    
+    final existing = await _secureStorage.read(key: _aesKeyStorageKey);
+    if (existing != null) {
+      final bytes = base64Decode(existing);
+      _cachedKey = encrypt.Key(bytes);
+      print('✅ AuditLogs: Loaded encryption key from local storage');
+      return _cachedKey!;
+    }
+    
+    print('⚠️ AuditLogs: No encryption key found');
+    return null;
+  }
+
+  Future<String?> _decryptValue(String encoded) async {
+    if (encoded.isEmpty) return null;
+    
+    if (_emailCache.containsKey(encoded)) {
+      return _emailCache[encoded];
+    }
+    
+    try {
+      final key = await _getOrCreateAesKey();
+      if (key == null) {
+        print('⚠️ Cannot decrypt: No encryption key available');
+        return null;
+      }
+      
+      final combined = base64Decode(encoded);
+      
+      if (combined.length < 17) {
+        print('⚠️ Encrypted data too short');
+        return null;
+      }
+      
+      final ivBytes = combined.sublist(0, 16);
+      final cipherBytes = combined.sublist(16);
+      final iv = encrypt.IV(ivBytes);
+      final encrypter = encrypt.Encrypter(encrypt.AES(key, mode: encrypt.AESMode.cbc));
+      final encrypted = encrypt.Encrypted(cipherBytes);
+      
+      final decrypted = encrypter.decrypt(encrypted, iv: iv);
+      
+      _emailCache[encoded] = decrypted;
+      
+      return decrypted;
+    } catch (e) {
+      print('❌ Decryption failed for email: $e');
+      return null;
+    }
+  }
+
+  bool _looksEncrypted(String value) {
+    if (value.isEmpty) return false;
+    
+    try {
+      base64Decode(value);
+      return value.length > 50 && !value.contains('@');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<String> _getDisplayEmail(String email) async {
+    if (email.isEmpty) return 'No Email';
+    
+    if (email.contains('@') && email.contains('.')) {
+      return email;
+    }
+    
+    if (_looksEncrypted(email)) {
+      final decrypted = await _decryptValue(email);
+      if (decrypted != null && decrypted.isNotEmpty) {
+        return decrypted;
+      }
+      return '[Encrypted Email]';
+    }
+    
+    return email;
+  }
+
+  Future<void> _loadApplicationLogo() async {
+    try {
+      final doc = await FirebaseFirestore.instance.collection('SystemSettings').doc('global').get();
       if (doc.exists) {
         final data = doc.data()!;
         setState(() {
@@ -189,17 +308,10 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
   }
 
   Future<void> _loadActionChoices() async {
-    final snapshot = await FirebaseFirestore.instance
-        .collection('AuditLogs')
-        .get();
+    final snapshot = await FirebaseFirestore.instance.collection('AuditLogs').get();
 
-    final uniqueActions = snapshot.docs
-        .map((doc) => doc['action'] as String?)
-        .whereType<String>()
-        .toSet()
-        .toList();
-
-    uniqueActions.sort(); // optional: alphabetize
+    final uniqueActions = snapshot.docs.map((doc) => doc['action'] as String?).whereType<String>().toSet().toList();
+    uniqueActions.sort();
 
     setState(() {
       actionChoices = uniqueActions;
@@ -209,39 +321,17 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
 
   Future<void> _countLogs() async {
     try {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('AuditLogs')
-          .get();
+      final snapshot = await FirebaseFirestore.instance.collection('AuditLogs').get();
 
       int total = snapshot.docs.length;
       int superAdminCount = 0;
       int adminCount = 0;
 
-      final superAdminsSnapshot = await FirebaseFirestore.instance
-          .collection('SuperAdmin')
-          .get();
-      final adminsSnapshot = await FirebaseFirestore.instance
-          .collection('Admin')
-          .get();
-
-      final superAdminNames = superAdminsSnapshot.docs.map((doc) {
-        final fname = capitalizeEachWord(doc['firstName'] ?? '');
-        final lname = capitalizeEachWord(doc['lastName'] ?? '');
-        return '$fname $lname';
-      }).toSet();
-
-      final adminNames = adminsSnapshot.docs.map((doc) {
-        final fname = capitalizeEachWord(doc['firstName'] ?? '');
-        final lname = capitalizeEachWord(doc['lastName'] ?? '');
-        return '$fname $lname';
-      }).toSet();
-
       for (var doc in snapshot.docs) {
-        final name = doc['performedBy']?.toString().trim() ?? '';
-
-        if (superAdminNames.contains(name)) {
+        final role = doc['role']?.toString().trim() ?? '';
+        if (role == 'Super Admin') {
           superAdminCount++;
-        } else if (adminNames.contains(name)) {
+        } else if (role == 'Admin') {
           adminCount++;
         }
       }
@@ -258,65 +348,41 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
     }
   }
 
-  Future<void> _loadSuperAdminInfo() async {
+  Future<void> _loadUserInfo() async {
     try {
       final user = FirebaseAuth.instance.currentUser;
-      if (user != null) {
-        final doc = await FirebaseFirestore.instance
-            .collection('SuperAdmin')
-            .doc(user.uid)
-            .get();
-        if (doc.exists) {
-          setState(() {
-            firstName = capitalizeEachWord(doc['firstName'] ?? '');
-            lastName = capitalizeEachWord(doc['lastName'] ?? '');
-            // The following line fetches and updates the profilePictureUrl if it exists
-            profilePictureUrl =
-                doc['profilePicture'] ?? "assets/images/defaultDP.jpg";
-            _adminInfoLoaded = true;
-          });
-        } else {
-          setState(() => _adminInfoLoaded = true);
+      if (user == null) {
+        setState(() => _adminInfoLoaded = true);
+        return;
+      }
+
+      DocumentSnapshot? userDoc = await FirebaseFirestore.instance.collection('SuperAdmin').doc(user.uid).get();
+
+      String role = 'Super Admin';
+
+      if (!userDoc.exists) {
+        userDoc = await FirebaseFirestore.instance.collection('Admin').doc(user.uid).get();
+        if (userDoc.exists) {
+          role = 'Admin';
         }
+      }
+
+      if (userDoc.exists) {
+        final data = userDoc.data() as Map<String, dynamic>;
+        setState(() {
+          firstName = capitalizeEachWord(data['firstName'] ?? '');
+          lastName = capitalizeEachWord(data['lastName'] ?? '');
+          profilePictureUrl = data['profilePicture'] ?? "assets/images/defaultDP.jpg";
+          userRole = role;
+          _adminInfoLoaded = true;
+        });
       } else {
         setState(() => _adminInfoLoaded = true);
       }
     } catch (e) {
-      print('Error fetching SuperAdmin info: $e');
+      print('Error fetching user info: $e');
       setState(() => _adminInfoLoaded = true);
     }
-  }
-
-  Future<void> logAuditAction({
-    required String action,
-    required String description,
-  }) async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    String fullName = 'Unknown';
-    String email = user.email ?? 'No Email';
-
-    try {
-      final userDoc = await FirebaseFirestore.instance
-          .collection('SuperAdmin')
-          .doc(user.uid)
-          .get();
-
-      if (userDoc.exists) {
-        final firstName = userDoc['firstName'] ?? '';
-        final lastName = userDoc['lastName'] ?? '';
-        fullName = '$firstName $lastName'.trim();
-      }
-    } catch (_) {}
-
-    await FirebaseFirestore.instance.collection('AuditLogs').add({
-      'name': fullName,
-      'email': email,
-      'action': action,
-      'timestamp': FieldValue.serverTimestamp(),
-      'desc': description,
-    });
   }
 
   Stream<List<Map<String, dynamic>>> getAuditLogsStream() {
@@ -324,25 +390,32 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
         .collection('AuditLogs')
         .orderBy('timestamp', descending: true)
         .snapshots()
-        .map(
-          (snapshot) => snapshot.docs.map((doc) {
-            final data = doc.data();
-            return {
-              'name': data['performedBy'] ?? '',
-              'email': data['email'] ?? '',
-              'action': data['action'] ?? '',
-              'timestamp': data['timestamp'] ?? '',
-              'desc': data['description'] ?? '',
-            };
-          }).toList(),
-        );
+        .asyncMap((snapshot) async {
+      List<Map<String, dynamic>> logs = [];
+      
+      for (var doc in snapshot.docs) {
+        final data = doc.data();
+        final encryptedEmail = data['email'] ?? '';
+        
+        final displayEmail = await _getDisplayEmail(encryptedEmail);
+        
+        logs.add({
+          'name': data['performedBy'] ?? '',
+          'email': displayEmail, 
+          'action': data['action'] ?? '',
+          'timestamp': data['timestamp'] ?? '',
+          'desc': data['description'] ?? '',
+        });
+      }
+      
+      return logs;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final fullName = '$firstName $lastName';
 
-    // Loader screen covers everything until all data is loaded
     if (!_allDataLoaded) {
       return Scaffold(
         backgroundColor: lightBackground,
@@ -356,30 +429,27 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
       );
     }
 
+    final poppinsTextTheme = GoogleFonts.poppinsTextTheme(Theme.of(context).textTheme).apply(bodyColor: dark, displayColor: dark);
+
     return Theme(
-      data: Theme.of(context).copyWith(
-        textTheme: Theme.of(context).textTheme.apply(fontFamily: 'Poppins'),
-      ),
+      data: Theme.of(context).copyWith(textTheme: poppinsTextTheme, primaryTextTheme: poppinsTextTheme),
       child: Scaffold(
         backgroundColor: lightBackground,
-        drawer: NavigationDrawer(
-          applicationLogoUrl: _applicationLogoUrl,
-          activePage: "Audit Logs",
-        ),
+        drawer: NavigationDrawer(applicationLogoUrl: _applicationLogoUrl, activePage: "Audit Logs"),
         appBar: AppBar(
           backgroundColor: lightBackground,
           iconTheme: const IconThemeData(color: primarycolordark),
           elevation: 0,
           titleSpacing: 0,
-          title: const Row(
+          title: Row(
             children: [
-              SizedBox(width: 12),
-              Text(
-                "Audit Logs",
-                style: TextStyle(
-                  color: primarycolordark,
-                  fontWeight: FontWeight.bold,
-                  fontFamily: 'Poppins',
+              const SizedBox(width: 12),
+              Flexible(
+                child: Text(
+                  "Audit Logs",
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.poppins(color: primarycolordark, fontWeight: FontWeight.bold),
                 ),
               ),
             ],
@@ -390,12 +460,9 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
               child: ProfileButton(
                 imageUrl: profilePictureUrl,
                 name: fullName.trim().isNotEmpty ? fullName : "Loading...",
-                role: "Super Admin",
+                role: userRole,
                 onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const AdminProfilePage()),
-                  );
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminProfilePage()));
                 },
               ),
             ),
@@ -414,61 +481,44 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       LayoutBuilder(
-  builder: (context, constraints) {
-    bool isLargeScreen = constraints.maxWidth > 800;
+                        builder: (context, constraints) {
+                          bool isLargeScreen = constraints.maxWidth > 800;
 
-    final statCards = [
-      StatCard(
-        title: "Total Logs",
-        value: "$totalLogs",
-        color: primarycolordark,
-      ),
-      StatCard(
-        title: "By Super Admin",
-        value: "$superAdminLogs",
-        color: primarycolor,
-      ),
-      StatCard(
-        title: "By Admin",
-        value: "$adminLogs",
-        color: primarycolordark,
-      ),
-    ];
+                          final statCards = [
+                            StatCard(title: "Total Logs", value: "$totalLogs", color: primarycolordark),
+                            StatCard(title: "By Super Admin", value: "$superAdminLogs", color: primarycolor),
+                            StatCard(title: "By Admin", value: "$adminLogs", color: primarycolordark),
+                          ];
 
-    if (isLargeScreen) {
-      // Horizontal row, each card expands to fill equally
-      return Row(
-        children: [
-          for (int i = 0; i < statCards.length; i++) ...[
-            Expanded(child: statCards[i]),
-            if (i != statCards.length - 1) const SizedBox(width: 16),
-          ],
-        ],
-      );
-    } else {
-      // Vertical
-      return Column(
-        children: [
-          for (int i = 0; i < statCards.length; i++) ...[
-            SizedBox(width: double.infinity, child: statCards[i]),
-            if (i != statCards.length - 1) const SizedBox(height: 12),
-          ],
-        ],
-      );
-    }
-  },
-),
+                          if (isLargeScreen) {
+                            return Row(
+                              children: [
+                                for (int i = 0; i < statCards.length; i++) ...[
+                                  Expanded(child: statCards[i]),
+                                  if (i != statCards.length - 1) const SizedBox(width: 16),
+                                ],
+                              ],
+                            );
+                          } else {
+                            return Column(
+                              children: [
+                                for (int i = 0; i < statCards.length; i++) ...[
+                                  SizedBox(width: double.infinity, child: statCards[i]),
+                                  if (i != statCards.length - 1) const SizedBox(height: 12),
+                                ],
+                              ],
+                            );
+                          }
+                        },
+                      ),
                       const SizedBox(height: 16),
                       _buildFilters(),
                       const SizedBox(height: 16),
                       StreamBuilder<List<Map<String, dynamic>>>(
                         stream: getAuditLogsStream(),
                         builder: (context, snapshot) {
-                          if (snapshot.connectionState ==
-                              ConnectionState.waiting) {
-                            return const Center(
-                              child: CircularProgressIndicator(),
-                            );
+                          if (snapshot.connectionState == ConnectionState.waiting) {
+                            return const Center(child: CircularProgressIndicator());
                           }
                           if (!snapshot.hasData || snapshot.data!.isEmpty) {
                             return _buildEmptyAuditLogsMessage();
@@ -476,25 +526,15 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
 
                           List<Map<String, dynamic>> allLogs = snapshot.data!;
 
-                          List<Map<String, dynamic>>
-                          filteredLogs = allLogs.where((log) {
-                            final matchesAction =
-                                selectedAction == null ||
-                                log['action'] == selectedAction;
-                            final matchesUser =
-                                selectedUser == null ||
-                                log['name'] == selectedUser;
+                          List<Map<String, dynamic>> filteredLogs = allLogs.where((log) {
+                            final matchesAction = selectedAction == null || log['action'] == selectedAction;
+                            final matchesUser = selectedUser == null || log['name'] == selectedUser;
 
                             bool matchesDate = true;
                             if (selectedDate != null) {
                               try {
-                                final logDate = (log['timestamp'] as Timestamp)
-                                    .toDate();
-                                matchesDate =
-                                    DateFormat('yyyy-MM-dd').format(logDate) ==
-                                    DateFormat(
-                                      'yyyy-MM-dd',
-                                    ).format(selectedDate!);
+                                final logDate = (log['timestamp'] as Timestamp).toDate();
+                                matchesDate = DateFormat('yyyy-MM-dd').format(logDate) == DateFormat('yyyy-MM-dd').format(selectedDate!);
                               } catch (_) {
                                 matchesDate = false;
                               }
@@ -507,10 +547,7 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
                             return _buildEmptyAuditLogsMessage();
                           }
 
-                          return _buildResponsiveTable(
-                            constraints.maxWidth,
-                            filteredLogs,
-                          );
+                          return _buildResponsiveTable(constraints.maxWidth, filteredLogs);
                         },
                       ),
                     ],
@@ -531,58 +568,26 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Image.asset(
-              'assets/images/web-search.png',
-              width: 240,
-              height: 240,
-            ),
+            Image.asset('assets/images/web-search.png', width: 240, height: 240),
             const SizedBox(height: 16),
-            const Text(
-              'No audit logs found.',
-              style: TextStyle(
-                fontFamily: 'Poppins',
-                fontSize: 14,
-                color: Colors.grey,
-              ),
-            ),
+            Text('No audit logs found.', style: GoogleFonts.poppins(fontSize: 14, color: Colors.grey)),
           ],
         ),
       ),
     );
   }
 
-  double _getCardWidth(BoxConstraints constraints) {
-    final totalSpacing = 12 * 2;
-    final maxWidth = constraints.maxWidth - totalSpacing - 24;
-    if (constraints.maxWidth > 1000) {
-      return maxWidth / 3;
-    } else if (constraints.maxWidth > 600) {
-      return maxWidth / 2;
-    } else {
-      return constraints.maxWidth - 24;
-    }
-  }
-
   Widget _buildFilters() {
     return StreamBuilder<List<Map<String, dynamic>>>(
       stream: getAuditLogsStream(),
       builder: (context, snapshot) {
-        if (!snapshot.hasData) {
-          return const SizedBox();
-        }
-
-        final userOptions = snapshot.data!
-            .map((log) => log['name']?.toString() ?? '')
-            .toSet()
-            .toList();
-
+        if (!snapshot.hasData) return const SizedBox();
+        final userOptions = snapshot.data!.map((log) => log['name']?.toString() ?? '').toSet().toList();
         final isSmallScreen = MediaQuery.of(context).size.width < 800;
 
         return Card(
           elevation: 2,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           color: Colors.white,
           child: Padding(
             padding: const EdgeInsets.all(16),
@@ -625,22 +630,11 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
         items: actionChoices.map((action) {
           return DropdownMenuItem(
             value: action,
-            child: Text(
-              action,
-              style: const TextStyle(
-                fontFamily: 'Poppins',
-                fontWeight: FontWeight.w500,
-                color: dark,
-              ),
-            ),
+            child: Text(action, style: GoogleFonts.poppins(fontWeight: FontWeight.w500, color: dark)),
           );
         }).toList(),
         onChanged: (value) => setState(() => selectedAction = value),
-        style: const TextStyle(
-          fontFamily: 'Poppins',
-          fontWeight: FontWeight.w500,
-          color: dark,
-        ),
+        style: GoogleFonts.poppins(fontWeight: FontWeight.w500, color: dark),
         iconEnabledColor: secondarycolor,
         dropdownColor: Colors.white,
       ),
@@ -654,28 +648,15 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
       height: 48,
       child: DropdownButtonFormField<String>(
         decoration: _dropdownDecoration('Select Users'),
-        value: selectedUser != null && filteredUsers.contains(selectedUser)
-            ? selectedUser
-            : null,
+        value: selectedUser != null && filteredUsers.contains(selectedUser) ? selectedUser : null,
         items: filteredUsers.map((user) {
           return DropdownMenuItem<String>(
             value: user,
-            child: Text(
-              user,
-              style: const TextStyle(
-                fontFamily: 'Poppins',
-                fontWeight: FontWeight.w500,
-                color: dark,
-              ),
-            ),
+            child: Text(user, style: GoogleFonts.poppins(fontWeight: FontWeight.w500, color: dark)),
           );
         }).toList(),
         onChanged: (value) => setState(() => selectedUser = value),
-        style: const TextStyle(
-          fontFamily: 'Poppins',
-          fontWeight: FontWeight.w500,
-          color: dark,
-        ),
+        style: GoogleFonts.poppins(fontWeight: FontWeight.w500, color: dark),
         iconEnabledColor: secondarycolor,
         dropdownColor: Colors.white,
       ),
@@ -697,14 +678,9 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
                   Icon(Icons.calendar_today, size: 18, color: Colors.grey[700]),
                   const SizedBox(width: 8),
                   Text(
-                    selectedDate != null
-                        ? DateFormat.yMMMMd().format(selectedDate!)
-                        : 'Select Date',
-                    style: TextStyle(
-                      color: selectedDate != null
-                          ? Colors.black
-                          : Colors.grey[600],
-                      fontFamily: 'Poppins',
+                    selectedDate != null ? DateFormat.yMMMMd().format(selectedDate!) : 'Select Date',
+                    style: GoogleFonts.poppins(
+                      color: selectedDate != null ? Colors.black : Colors.grey[600],
                     ),
                   ),
                 ],
@@ -731,96 +707,204 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
         },
         style: ButtonStyle(
           backgroundColor: MaterialStateProperty.resolveWith<Color>((states) {
-            if (states.contains(MaterialState.hovered)) {
-              return primarycolordark;
-            }
+            if (states.contains(MaterialState.hovered)) return primarycolordark;
             return secondarycolor;
           }),
-          shape: MaterialStateProperty.all<RoundedRectangleBorder>(
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-          ),
-          overlayColor: MaterialStateProperty.all(
-            Colors.white.withOpacity(0.08),
-          ),
+          shape: MaterialStateProperty.all<RoundedRectangleBorder>(RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+          overlayColor: MaterialStateProperty.all(Colors.white.withOpacity(0.08)),
           side: MaterialStateProperty.all(BorderSide.none),
         ),
-        child: const Text(
-          'Clear Filter',
-          style: TextStyle(
-            fontFamily: 'Poppins',
-            fontWeight: FontWeight.bold,
-            color: Colors.white,
-          ),
-        ),
+        child: Text('Clear Filter', style: GoogleFonts.poppins(fontWeight: FontWeight.bold, color: Colors.white)),
       ),
     );
   }
 
-  Widget _buildResponsiveTable(
-    double maxWidth,
-    List<Map<String, dynamic>> filteredLogs,
-  ) {
-    return StreamBuilder<List<Map<String, dynamic>>>(
-      stream: getAuditLogsStream(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
+  Widget _buildResponsiveTable(double maxWidth, List<Map<String, dynamic>> filteredLogs) {
+    final bool isSmallScreen = maxWidth < 800;
 
-        if (!snapshot.hasData || snapshot.data!.isEmpty) {
-          return const Center(child: Text('No audit logs found.'));
-        }
-
-        List<Map<String, dynamic>> allLogs = snapshot.data!;
-
-        List<Map<String, dynamic>> filteredLogs = allLogs.where((log) {
-          final matchesAction =
-              selectedAction == null || log['action'] == selectedAction;
-          final matchesUser =
-              selectedUser == null || log['name'] == selectedUser;
-
-          bool matchesDate = true;
-          if (selectedDate != null) {
-            try {
-              final logDate = (log['timestamp'] as Timestamp).toDate();
-              matchesDate =
-                  DateFormat('yyyy-MM-dd').format(logDate) ==
-                  DateFormat('yyyy-MM-dd').format(selectedDate!);
-            } catch (_) {
-              matchesDate = false;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: 8),
+        if (!isSmallScreen)
+          Card(
+            color: primarycolordark,
+            margin: const EdgeInsets.symmetric(vertical: 8),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(
+                children: [
+                  Expanded(flex: 2, child: Center(child: Text('Name', style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)))),
+                  Expanded(flex: 3, child: Center(child: Text('Email', style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)))),
+                  Expanded(flex: 2, child: Center(child: Text('Action', style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)))),
+                  Expanded(flex: 3, child: Center(child: Text('Timestamp', style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)))),
+                  Expanded(flex: 4, child: Center(child: Text('Description', style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)))),
+                ],
+              ),
+            ),
+          ),
+        const SizedBox(height: 8),
+        ...filteredLogs.map((log) {
+          final String desc = (log['desc'] ?? '').toString();
+          final String name = (log['name'] ?? '').toString();
+          final String email = (log['email'] ?? '').toString();
+          final String action = (log['action'] ?? '').toString();
+          final dynamic ts = log['timestamp'];
+          String timestampText;
+          try {
+            if (ts is Timestamp) {
+              timestampText = DateFormat.yMMMMd().format((ts as Timestamp).toDate()); 
+            } else if (ts is DateTime) {
+              timestampText = DateFormat.yMMMMd().format(ts);
+            } else {
+              timestampText = ts.toString();
             }
+          } catch (_) {
+            timestampText = ts.toString();
           }
 
-          return matchesAction && matchesUser && matchesDate;
-        }).toList();
-
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Card(
-              color: primarycolordark,
-              margin: const EdgeInsets.symmetric(vertical: 8),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
+          if (isSmallScreen) {
+            return Card(
+              color: Colors.white,
+              elevation: 2,
+              margin: const EdgeInsets.only(bottom: 12),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 12,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        CircleAvatar(
+                          radius: 18,
+                          backgroundColor: secondarycolor,
+                          child: Text(
+                            name.isNotEmpty ? name[0].toUpperCase() : '?',
+                            style: GoogleFonts.poppins(color: Colors.white, fontSize: 14),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                name,
+                                style: GoogleFonts.poppins(fontWeight: FontWeight.bold, color: dark, fontSize: 15),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                email,
+                                style: GoogleFonts.poppins(color: dark, fontSize: 13),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: primarycolor.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(action, style: GoogleFonts.poppins(color: primarycolordark, fontWeight: FontWeight.w600, fontSize: 12)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Text(
+                          'Date: ',
+                          style: GoogleFonts.poppins(
+                            fontWeight: FontWeight.w600,
+                            color: dark,
+                          ),
+                        ),
+                        Expanded(
+                          child: Text(
+                            timestampText,
+                            style: GoogleFonts.poppins(color: dark),
+                            softWrap: false, 
+                            overflow: TextOverflow.ellipsis, 
+                            maxLines: 1,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    if (desc.isNotEmpty) ...[
+                      Text(
+                        'Description:',
+                        style: GoogleFonts.poppins(
+                          fontWeight: FontWeight.w600,
+                          color: dark,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        desc,
+                        style: GoogleFonts.poppins(color: dark),
+                        softWrap: true,
+                      ),
+                    ],
+                  ],
                 ),
+              ),
+            );
+          } else {
+            return Card(
+              color: Colors.white,
+              elevation: 2,
+              margin: const EdgeInsets.only(bottom: 10),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 child: Row(
-                  children: const [
+                  children: [
+                    Expanded(
+                      flex: 2,
+                      child: Row(
+                        children: [
+                          CircleAvatar(
+                            radius: 16,
+                            backgroundColor: secondarycolor,
+                            child: Text(
+                              name.isNotEmpty ? name[0].toUpperCase() : '?',
+                              style: GoogleFonts.poppins(color: Colors.white, fontSize: 14),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              name,
+                              overflow: TextOverflow.ellipsis,
+                              style: GoogleFonts.poppins(fontWeight: FontWeight.bold, color: dark),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      flex: 3,
+                      child: Center(
+                        child: Text(
+                          email,
+                          overflow: TextOverflow.ellipsis,
+                          style: GoogleFonts.poppins(color: dark),
+                        ),
+                      ),
+                    ),
                     Expanded(
                       flex: 2,
                       child: Center(
                         child: Text(
-                          'Name',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontFamily: 'Poppins',
-                            fontSize: 13,
-                            color: Colors.white,
-                          ),
+                          action,
+                          overflow: TextOverflow.ellipsis,
+                          style: GoogleFonts.poppins(color: dark),
                         ),
                       ),
                     ),
@@ -828,213 +912,52 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
                       flex: 3,
                       child: Center(
                         child: Text(
-                          'Email',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontFamily: 'Poppins',
-                            fontSize: 13,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      flex: 2,
-                      child: Center(
-                        child: Text(
-                          'Action',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontFamily: 'Poppins',
-                            fontSize: 13,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      flex: 3,
-                      child: Center(
-                        child: Text(
-                          'Timestamp',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontFamily: 'Poppins',
-                            fontSize: 13,
-                            color: Colors.white,
-                          ),
+                          timestampText,
+                          overflow: TextOverflow.ellipsis,
+                          style: GoogleFonts.poppins(color: dark),
                         ),
                       ),
                     ),
                     Expanded(
                       flex: 4,
-                      child: Center(
-                        child: Text(
-                          'Description',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontFamily: 'Poppins',
-                            fontSize: 13,
-                            color: Colors.white,
-                          ),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              desc,
+                              maxLines: 5,
+                              overflow: TextOverflow.ellipsis,
+                              style: GoogleFonts.poppins(color: dark),
+                            ),
+                          ],
                         ),
                       ),
                     ),
                   ],
                 ),
               ),
-            ),
-            const SizedBox(height: 8),
-            ...filteredLogs.map((log) {
-              return Card(
-                color: Colors.white,
-                elevation: 2,
-                margin: const EdgeInsets.only(bottom: 10),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        flex: 2,
-                        child: Row(
-                          children: [
-                            CircleAvatar(
-                              radius: 16,
-                              backgroundColor: secondarycolor,
-                              child: Text(
-                                (log['name']?.isNotEmpty ?? false)
-                                    ? log['name']![0].toUpperCase()
-                                    : '?',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 14,
-                                  fontFamily: 'Poppins',
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                log['name'] ?? '',
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontFamily: 'Poppins',
-                                  fontWeight: FontWeight.bold,
-                                  color: dark,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Expanded(
-                        flex: 3,
-                        child: Center(
-                          child: Text(
-                            log['email'] ?? '',
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontFamily: 'Poppins',
-                              color: dark,
-                            ),
-                          ),
-                        ),
-                      ),
-                      Expanded(
-                        flex: 2,
-                        child: Center(
-                          child: Text(
-                            log['action'] ?? '',
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontFamily: 'Poppins',
-                              color: dark,
-                            ),
-                          ),
-                        ),
-                      ),
-                      Expanded(
-                        flex: 3,
-                        child: Center(
-                          child: Text(
-                            log['timestamp'] is Timestamp
-                                ? DateFormat('yyyy-MM-dd HH:mm:ss').format(
-                                    (log['timestamp'] as Timestamp).toDate(),
-                                  )
-                                : log['timestamp'].toString(),
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontFamily: 'Poppins',
-                              color: dark,
-                            ),
-                          ),
-                        ),
-                      ),
-                      Expanded(
-                        flex: 4,
-                        child: Center(
-                          child: Text(
-                            log['desc'] ?? '',
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontFamily: 'Poppins',
-                              color: dark,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            }).toList(),
-          ],
-        );
-      },
+            );
+          }
+        }).toList(),
+      ],
     );
   }
 
-  InputDecoration _dropdownDecoration(
-    String label, {
-    bool isDate = false,
-    IconData? icon,
-  }) {
+  InputDecoration _dropdownDecoration(String label, {bool isDate = false, IconData? icon}) {
     return InputDecoration(
       hintText: isDate ? label : null,
       labelText: isDate ? null : label,
       prefixIcon: icon != null ? Icon(icon, color: secondarycolor) : null,
       filled: true,
       fillColor: Colors.white,
-      labelStyle: const TextStyle(
-        fontFamily: 'Poppins',
-        color: dark,
-        fontWeight: FontWeight.w500,
-      ),
-      hintStyle: const TextStyle(
-        fontFamily: 'Poppins',
-        color: dark,
-        fontWeight: FontWeight.w500,
-      ),
-      floatingLabelStyle: const TextStyle(
-        color: primarycolordark,
-        fontFamily: 'Poppins',
-        fontWeight: FontWeight.bold,
-      ),
+      labelStyle: GoogleFonts.poppins(color: dark, fontWeight: FontWeight.w500),
+      hintStyle: GoogleFonts.poppins(color: dark, fontWeight: FontWeight.w500),
+      floatingLabelStyle: GoogleFonts.poppins(color: primarycolordark, fontWeight: FontWeight.bold),
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: const BorderSide(color: secondarycolor, width: 1.5),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: const BorderSide(color: primarycolordark, width: 1.6),
-      ),
+      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: secondarycolor, width: 1.5)),
+      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: primarycolordark, width: 1.6)),
     );
   }
 
@@ -1047,17 +970,10 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
       builder: (context, child) {
         return Theme(
           data: Theme.of(context).copyWith(
-            colorScheme: ColorScheme.light(
-              primary: primarycolordark,
-              onPrimary: Colors.white,
-              onSurface: dark,
-            ),
+            colorScheme: ColorScheme.light(primary: primarycolordark, onPrimary: Colors.white, onSurface: dark),
             dialogBackgroundColor: Colors.white,
             textButtonTheme: TextButtonThemeData(
-              style: TextButton.styleFrom(
-                foregroundColor: primarycolordark,
-                textStyle: const TextStyle(fontFamily: 'Poppins'),
-              ),
+              style: TextButton.styleFrom(foregroundColor: primarycolordark, textStyle: GoogleFonts.poppins()),
             ),
           ),
           child: child!,
@@ -1065,9 +981,7 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
       },
     );
 
-    if (picked != null) {
-      setState(() => selectedDate = picked);
-    }
+    if (picked != null) setState(() => selectedDate = picked);
   }
 }
 
@@ -1076,73 +990,20 @@ class StatCard extends StatelessWidget {
   final String value;
   final Color color;
 
-  const StatCard({
-    super.key,
-    required this.title,
-    required this.value,
-    required this.color,
-  });
+  const StatCard({super.key, required this.title, required this.value, required this.color});
 
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.10),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: color.withOpacity(0.31),
-          width: 1.5,
-        ),
-      ),
+      decoration: BoxDecoration(color: color.withOpacity(0.10), borderRadius: BorderRadius.circular(14), border: Border.all(color: color.withOpacity(0.31), width: 1.5)),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: color,
-              fontFamily: 'Poppins',
-            ),
-          ),
+          Text(value, style: GoogleFonts.poppins(fontSize: 24, fontWeight: FontWeight.bold, color: color)),
           const SizedBox(height: 4),
-          Text(
-            title,
-            style: TextStyle(
-              fontSize: 14,
-              color: color.withOpacity(0.9),
-              fontFamily: 'Poppins',
-            ),
-          ),
+          Text(title, style: GoogleFonts.poppins(fontSize: 14, color: color.withOpacity(0.9))),
         ],
-      ),
-    );
-  }
-}
-
-class AnimatedHoverCard extends StatefulWidget {
-  final Widget child;
-  const AnimatedHoverCard({super.key, required this.child});
-
-  @override
-  State<AnimatedHoverCard> createState() => _AnimatedHoverCardState();
-}
-
-class _AnimatedHoverCardState extends State<AnimatedHoverCard> {
-  bool isHovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => isHovered = true),
-      onExit: (_) => setState(() => isHovered = false),
-      child: AnimatedScale(
-        scale: isHovered ? 1.012 : 1.0,
-        duration: const Duration(milliseconds: 120),
-        child: widget.child,
       ),
     );
   }
@@ -1184,10 +1045,10 @@ class _HoverButtonState extends State<HoverButton> {
           duration: const Duration(milliseconds: 130),
           decoration: BoxDecoration(
             color: widget.isActive
-                ? primarycolor.withOpacity(0.25) // Active highlight
+                ? primarycolor.withOpacity(0.25)
                 : (isHovered
-                      ? primarycolor.withOpacity(0.10) // Hover highlight
-                      : Colors.transparent),
+                    ? primarycolor.withOpacity(0.10)
+                    : Colors.transparent),
             borderRadius: BorderRadius.circular(10),
           ),
           child: ListTile(
@@ -1199,12 +1060,11 @@ class _HoverButtonState extends State<HoverButton> {
             ),
             title: Text(
               widget.label ?? '',
-              style: TextStyle(
+              style: GoogleFonts.poppins(
                 color: widget.isActive
                     ? primarycolordark
                     : (widget.isLogout ? Colors.red : primarycolordark),
                 fontWeight: widget.isActive ? FontWeight.bold : FontWeight.w600,
-                fontFamily: 'Poppins',
               ),
             ),
             onTap: widget.onPressed,
@@ -1218,16 +1078,11 @@ class _HoverButtonState extends State<HoverButton> {
         cursor: SystemMouseCursors.click,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 130),
-          transform: isHovered
-              ? (Matrix4.identity()..scale(1.07))
-              : Matrix4.identity(),
+          transform: isHovered ? (Matrix4.identity()..scale(1.07)) : Matrix4.identity(),
           child: TextButton(
             style: TextButton.styleFrom(
               foregroundColor: primarycolordark,
-              textStyle: const TextStyle(
-                fontFamily: 'Poppins',
-                fontWeight: FontWeight.w600,
-              ),
+              textStyle: GoogleFonts.poppins(fontWeight: FontWeight.w600),
             ),
             onPressed: widget.onPressed,
             child: widget.child ?? const SizedBox(),
@@ -1240,7 +1095,7 @@ class _HoverButtonState extends State<HoverButton> {
 
 class NavigationDrawer extends StatelessWidget {
   final String? applicationLogoUrl;
-  final String activePage; // holds current active page name
+  final String activePage;
 
   const NavigationDrawer({
     super.key,
@@ -1257,88 +1112,87 @@ class NavigationDrawer extends StatelessWidget {
           DrawerHeader(
             decoration: const BoxDecoration(color: lightBackground),
             child: Center(
-              child:
-                  applicationLogoUrl != null && applicationLogoUrl!.isNotEmpty
+              child: applicationLogoUrl != null && applicationLogoUrl!.isNotEmpty
                   ? Image.network(
                       applicationLogoUrl!,
                       height: double.infinity,
                       fit: BoxFit.contain,
-                      errorBuilder: (context, error, stackTrace) => Image.asset(
-                        'assets/images/dhvbot.png',
-                        height: double.infinity,
-                        fit: BoxFit.contain,
-                      ),
+                      errorBuilder: (context, error, stackTrace) =>
+                          Image.asset('assets/images/dhvbot.png'),
                     )
-                  : Image.asset(
-                      'assets/images/dhvbot.png',
-                      height: double.infinity,
-                      fit: BoxFit.contain,
-                    ),
+                  : Image.asset('assets/images/dhvbot.png'),
             ),
           ),
           _drawerItem(context, Icons.dashboard_outlined, "Dashboard", () {
-            Navigator.pop(context);
-            Navigator.push(
+            Navigator.pushReplacement(
               context,
-              MaterialPageRoute(
-                builder: (_) => const SuperAdminDashboardPage(),
-              ),
+              MaterialPageRoute(builder: (_) => const SuperAdminDashboardPage()),
             );
           }),
           _drawerItem(context, Icons.people_outline, "Users Info", () {
-            Navigator.pop(context);
-            Navigator.push(
+            Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (_) => const UserinfoPage()),
             );
           }),
-          _drawerItem(context, Icons.chat_outlined, "Chat Logs", () {
-            Navigator.pop(context);
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const ChatsPage()),
-            );
-          }),
           _drawerItem(context, Icons.feedback_outlined, "Feedbacks", () {
-            Navigator.pop(context);
-            Navigator.push(
+            Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (_) => const FeedbacksPage()),
             );
           }),
-          _drawerItem(
-            context,
-            Icons.admin_panel_settings_outlined,
-            "Admin Management",
-            () {
-              Navigator.pop(context);
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const AdminManagementPage()),
-              );
-            },
-          ),
-          _drawerItem(context, Icons.receipt_long_outlined, "Audit Logs", () {
-            Navigator.pop(context);
-            Navigator.push(
+          _drawerItem(context, Icons.admin_panel_settings_outlined, "Admin Management", () {
+            Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (_) => const AuditLogsPage()),
+              MaterialPageRoute(builder: (_) => const AdminManagementPage()),
             );
           }),
+          // _drawerItem(context, Icons.warning_amber_rounded, "Emergency Requests", () {
+          //   Navigator.pop(context);
+          //   Navigator.push(
+          //     context,
+          //     MaterialPageRoute(builder: (_) => const EmergencyRequestsPage()),
+          //   );
+          // }),
           _drawerItem(context, Icons.settings_outlined, "Settings", () {
-            Navigator.pop(context);
-            Navigator.push(
+            Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (_) => const SystemSettingsPage()),
             );
           }),
-          const Spacer(),
-          _drawerItem(context, Icons.logout, "Logout", () {
+          _drawerItem(context, Icons.receipt_long_outlined, "Audit Logs", () {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (_) => const AdminLoginPage()),
+              MaterialPageRoute(builder: (_) => const AuditLogsPage()),
             );
-          }, isLogout: true),
+          }),
+          const Spacer(),
+          _drawerItem(
+            context,
+            Icons.logout,
+            "Logout",
+            () async {
+              try {
+                await FirebaseAuth.instance.signOut();
+                Navigator.pushAndRemoveUntil(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AdminLoginPage()),
+                  (route) => false,
+                );
+              } catch (e) {
+                print("Logout error: $e");
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      "Logout failed. Please try again.",
+                      style: GoogleFonts.poppins(),
+                    ),
+                  ),
+                );
+              }
+            },
+            isLogout: true,
+          ),
         ],
       ),
     );

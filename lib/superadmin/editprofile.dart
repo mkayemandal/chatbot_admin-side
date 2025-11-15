@@ -1,13 +1,15 @@
 import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:lottie/lottie.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
-import 'dart:convert';
-import 'profile.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:intl/intl.dart';
+import 'profile.dart';
 
 const primarycolor = Color(0xFFffc803);
 const primarycolordark = Color(0xFF550100);
@@ -20,20 +22,17 @@ String capitalizeEachWord(String text) {
   return text
       .toLowerCase()
       .split(' ')
-      .map((word) => word.isNotEmpty
-          ? '${word[0].toUpperCase()}${word.substring(1)}'
-          : '')
+      .map((word) =>
+          word.isNotEmpty ? '${word[0].toUpperCase()}${word.substring(1)}' : '')
       .join(' ');
 }
 
 class EditAdminProfilePage extends StatefulWidget {
   @override
-  _EditAdminProfilePageState createState() =>
-      _EditAdminProfilePageState();
+  _EditAdminProfilePageState createState() => _EditAdminProfilePageState();
 }
 
-class _EditAdminProfilePageState
-    extends State<EditAdminProfilePage> {
+class _EditAdminProfilePageState extends State<EditAdminProfilePage> {
   final _formKey = GlobalKey<FormState>();
   final _firstNameController = TextEditingController();
   final _lastNameController = TextEditingController();
@@ -59,7 +58,8 @@ class _EditAdminProfilePageState
       if (doc.exists) {
         final data = doc.data()!;
         setState(() {
-          _firstNameController.text = capitalizeEachWord(data['firstName'] ?? '');
+          _firstNameController.text =
+              capitalizeEachWord(data['firstName'] ?? '');
           _lastNameController.text = capitalizeEachWord(data['lastName'] ?? '');
           _birthdayController.text = data['birthday'] ?? '';
           gender = data['gender'] ?? 'Female';
@@ -76,10 +76,8 @@ class _EditAdminProfilePageState
 
   Future<void> _pickAndUploadImage() async {
     final picker = ImagePicker();
-    final picked = await picker.pickImage(
-      source: ImageSource.gallery,
-      imageQuality: 80,
-    );
+    final picked =
+        await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
 
     if (picked == null) return;
 
@@ -98,9 +96,7 @@ class _EditAdminProfilePageState
           http.MultipartFile.fromBytes('file', bytes, filename: picked.name),
         );
       } else {
-        request.files.add(
-          await http.MultipartFile.fromPath('file', picked.path),
-        );
+        request.files.add(await http.MultipartFile.fromPath('file', picked.path));
       }
 
       final response = await request.send();
@@ -114,18 +110,18 @@ class _EditAdminProfilePageState
           _profileImageUrl = imageUrl;
         });
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Image uploaded! Click Save Changes to apply.'),
-            backgroundColor: primarycolor,
-          ),
+        _showFloatingSnackBar(
+          message: 'Image uploaded! Click Save Changes to apply.',
+          background: primarycolor,
+          textColor: Colors.black,
         );
       } else {
         throw Exception('Upload failed with status ${response.statusCode}');
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.redAccent),
+      _showFloatingSnackBar(
+        message: 'Error: $e',
+        background: Colors.redAccent,
       );
     }
   }
@@ -133,10 +129,7 @@ class _EditAdminProfilePageState
   Future<void> _saveProfile() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
-      await FirebaseFirestore.instance
-          .collection('SuperAdmin')
-          .doc(user.uid)
-          .update({
+      await FirebaseFirestore.instance.collection('SuperAdmin').doc(user.uid).update({
         'firstName': _firstNameController.text.trim(),
         'lastName': _lastNameController.text.trim(),
         'birthday': _birthdayController.text.trim(),
@@ -144,6 +137,106 @@ class _EditAdminProfilePageState
         'userType': 'Super Admin',
         'profilePicture': _profileImageUrl ?? '',
       });
+    }
+  }
+
+  void _showFloatingSnackBar({
+    required String message,
+    Color background = primarycolor,
+    Color textColor = Colors.white,
+  }) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          message,
+          style: GoogleFonts.poppins(color: textColor),
+        ),
+        backgroundColor: background,
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+    );
+  }
+
+  Future<void> _selectDate() async {
+    FocusScope.of(context).unfocus();
+
+    await Future.delayed(const Duration(milliseconds: 50));
+
+    DateTime initialDate = DateTime.now().subtract(const Duration(days: 365 * 25));
+    final parsed = _parseDateFromString(_birthdayController.text);
+    if (parsed != null) {
+      initialDate = parsed;
+    }
+
+    final now = DateTime.now();
+    if (initialDate.isAfter(now)) initialDate = now;
+
+    DateTime? pickedDate;
+    try {
+      pickedDate = await showDatePicker(
+        context: context,
+        initialDate: initialDate,
+        firstDate: DateTime(1900),
+        lastDate: now,
+        builder: (context, child) {
+          return Theme(
+            data: Theme.of(context).copyWith(
+              colorScheme: const ColorScheme.light(
+                primary: primarycolordark,
+                onPrimary: Colors.white,
+                onSurface: dark,
+              ),
+            ),
+            child: child!,
+          );
+        },
+      );
+    } catch (err, stack) {
+      debugPrint('showDatePicker failed with error: $err\n$stack');
+      try {
+        pickedDate = await showDatePicker(
+          context: context,
+          initialDate: initialDate,
+          firstDate: DateTime(1900),
+          lastDate: now,
+        );
+      } catch (err2, stack2) {
+        debugPrint('Fallback showDatePicker also failed: $err2\n$stack2');
+        pickedDate = null;
+      }
+    }
+
+    if (!mounted) return;
+
+    if (pickedDate != null) {
+      setState(() {
+        _birthdayController.text = DateFormat('MM/dd/yyyy').format(pickedDate!);
+      });
+    }
+  }
+
+  DateTime? _parseDateFromString(String? input) {
+    if (input == null || input.trim().isEmpty) return null;
+
+    final cleaned = input.trim();
+
+    // Try multiple known formats
+    for (final format in [
+      'MM/dd/yyyy',
+      'yyyy-MM-dd',
+      'dd/MM/yyyy',
+    ]) {
+      try {
+        return DateFormat(format).parseStrict(cleaned);
+      } catch (_) {}
+    }
+
+    try {
+      return DateTime.parse(cleaned);
+    } catch (_) {
+      return null;
     }
   }
 
@@ -168,12 +261,11 @@ class _EditAdminProfilePageState
         iconTheme: const IconThemeData(color: primarycolordark),
         backgroundColor: lightBackground,
         elevation: 1,
-        title: const Text(
+        title: Text(
           'Edit Profile',
-          style: TextStyle(
+          style: GoogleFonts.poppins(
             color: primarycolordark,
             fontWeight: FontWeight.bold,
-            fontFamily: 'Poppins',
           ),
         ),
       ),
@@ -206,7 +298,7 @@ class _EditAdminProfilePageState
                                   : (_profileImageUrl != null
                                       ? NetworkImage(_profileImageUrl!)
                                       : const AssetImage('assets/default_avatar.png'))
-                                  as ImageProvider,
+                                      as ImageProvider,
                             ),
                             Positioned(
                               bottom: 0,
@@ -219,10 +311,7 @@ class _EditAdminProfilePageState
                                     shape: BoxShape.circle,
                                   ),
                                   padding: const EdgeInsets.all(8),
-                                  child: const Icon(
-                                    Icons.camera_alt,
-                                    color: Colors.white,
-                                  ),
+                                  child: const Icon(Icons.camera_alt, color: Colors.white),
                                 ),
                               ),
                             ),
@@ -230,27 +319,25 @@ class _EditAdminProfilePageState
                         ),
                       ),
                       const SizedBox(height: 20),
-                      const Text(
+                      Text(
                         "Update Your Information",
-                        style: TextStyle(
+                        textAlign: TextAlign.center,
+                        style: GoogleFonts.poppins(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
                           color: primarycolordark,
-                          fontFamily: 'Poppins',
                         ),
                       ),
                       const SizedBox(height: 20),
                       _buildTextField("First Name", _firstNameController),
                       _buildTextField("Last Name", _lastNameController),
-                      _buildTextField("Birthday", _birthdayController),
+                      _buildBirthdayField("Birthday", _birthdayController),
                       _buildDropdown(
                         "Gender",
                         gender,
                         ["Female", "Male", "Other"],
                         (value) {
-                          if (value != null) {
-                            setState(() => gender = value);
-                          }
+                          if (value != null) setState(() => gender = value);
                         },
                         iconItems: {
                           "Female": Icons.female,
@@ -264,12 +351,10 @@ class _EditAdminProfilePageState
                           if (_formKey.currentState!.validate()) {
                             await _saveProfile();
                             if (context.mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text("Profile successfully updated"),
-                                  behavior: SnackBarBehavior.floating,
-                                  backgroundColor: primarycolor,
-                                ),
+                              _showFloatingSnackBar(
+                                message: "Profile successfully updated",
+                                background: primarycolor,
+                                textColor: Colors.black,
                               );
                               Navigator.pushReplacement(
                                 context,
@@ -283,14 +368,11 @@ class _EditAdminProfilePageState
                           }
                         },
                         icon: const Icon(Icons.save),
-                        label: const Text("Save Changes"),
+                        label: Text("Save Changes", style: GoogleFonts.poppins()),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: primarycolordark,
                           foregroundColor: Colors.white,
-                          textStyle:
-                              const TextStyle(fontFamily: 'Poppins'),
-                          padding:
-                              const EdgeInsets.symmetric(vertical: 14),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(10),
                           ),
@@ -307,90 +389,83 @@ class _EditAdminProfilePageState
     );
   }
 
-  Widget _buildTextField(
-    String label,
-    TextEditingController controller, {
-    TextInputType keyboardType = TextInputType.text,
-  }) {
+  Widget _buildTextField(String label, TextEditingController controller,
+      {TextInputType keyboardType = TextInputType.text}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 10),
       child: TextFormField(
         controller: controller,
         keyboardType: keyboardType,
-        style: const TextStyle(
-          fontFamily: 'Poppins',
-          color: dark,
-          fontWeight: FontWeight.w500,
-        ),
-        decoration: InputDecoration(
-          labelText: label,
-          filled: true,
-          fillColor: Colors.white,
-          labelStyle: const TextStyle(color: dark, fontWeight: FontWeight.w500),
-          floatingLabelStyle: const TextStyle(
-            color: primarycolordark,
-            fontWeight: FontWeight.bold,
-          ),
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 16,
-            vertical: 18,
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide:
-                const BorderSide(color: secondarycolor, width: 1.5),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide:
-                const BorderSide(color: primarycolordark, width: 1.6),
-          ),
-          errorBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide:
-                const BorderSide(color: Colors.redAccent, width: 1.5),
-          ),
-          focusedErrorBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide:
-                const BorderSide(color: Colors.redAccent, width: 1.6),
-          ),
-          errorStyle: const TextStyle(
-            fontSize: 12,
-            fontFamily: 'Poppins',
-            color: Colors.redAccent,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
+        style: GoogleFonts.poppins(color: dark, fontWeight: FontWeight.w500),
+        decoration: _inputDecoration(label),
         validator: (value) =>
             (value == null || value.isEmpty) ? 'Please enter $label' : null,
       ),
     );
   }
 
-  Widget _buildDropdown(
-    String label,
-    String currentValue,
-    List<String> options,
-    ValueChanged<String?> onChanged, {
-    Map<String, IconData>? iconItems,
-  }) {
+  Widget _buildBirthdayField(String label, TextEditingController controller) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: TextFormField(
+        controller: controller,
+        readOnly: true,
+        onTap: _selectDate,
+        style: GoogleFonts.poppins(color: dark, fontWeight: FontWeight.w500),
+        decoration: _inputDecoration(label).copyWith(
+          suffixIcon: const Icon(Icons.calendar_today, color: primarycolordark),
+        ),
+        validator: (value) =>
+            (value == null || value.isEmpty) ? 'Please select your birthday' : null,
+      ),
+    );
+  }
+
+  InputDecoration _inputDecoration(String label) {
+    return InputDecoration(
+      labelText: label,
+      filled: true,
+      fillColor: Colors.white,
+      labelStyle: GoogleFonts.poppins(color: dark, fontWeight: FontWeight.w500),
+      floatingLabelStyle:
+          GoogleFonts.poppins(color: primarycolordark, fontWeight: FontWeight.bold),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: secondarycolor, width: 1.5),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: primarycolordark, width: 1.6),
+      ),
+      errorBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: Colors.redAccent, width: 1.5),
+      ),
+      focusedErrorBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: Colors.redAccent, width: 1.6),
+      ),
+      errorStyle: GoogleFonts.poppins(
+        fontSize: 12,
+        color: Colors.redAccent,
+        fontWeight: FontWeight.w500,
+      ),
+    );
+  }
+
+  Widget _buildDropdown(String label, String currentValue, List<String> options,
+      ValueChanged<String?> onChanged,
+      {Map<String, IconData>? iconItems}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 10),
       child: DropdownButtonFormField<String>(
         value: currentValue,
         onChanged: onChanged,
-        decoration: InputDecoration(
-          labelText: label,
-          labelStyle: const TextStyle(fontFamily: 'Poppins', color: dark),
-          filled: true,
-          fillColor: lightBackground,
-          border:
-              OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-        ),
+        decoration: _inputDecoration(label),
         icon: const Icon(Icons.arrow_drop_down, color: primarycolordark),
         dropdownColor: lightBackground,
-        style: const TextStyle(fontFamily: 'Poppins', color: dark),
+        style: GoogleFonts.poppins(color: dark),
         items: options.map((type) {
           return DropdownMenuItem<String>(
             value: type,
@@ -399,7 +474,7 @@ class _EditAdminProfilePageState
                 if (iconItems != null && iconItems.containsKey(type))
                   Icon(iconItems[type], size: 20, color: primarycolordark),
                 const SizedBox(width: 8),
-                Text(type),
+                Text(type, style: GoogleFonts.poppins()),
               ],
             ),
           );

@@ -1,4 +1,10 @@
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:encrypt/encrypt.dart' as encrypt;
+import 'dart:convert';
+import 'package:mime/mime.dart';
+import 'package:http_parser/http_parser.dart';
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:chatbot/adminlogin.dart';
@@ -9,12 +15,12 @@ import 'package:chatbot/superadmin/auditlogs.dart';
 import 'package:chatbot/superadmin/chatlogs.dart';
 import 'package:chatbot/superadmin/feedbacks.dart';
 import 'package:chatbot/superadmin/profile.dart';
+import 'package:chatbot/superadmin/emergencypage.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as path;
 import 'package:mime/mime.dart';
 import 'package:lottie/lottie.dart';
-import 'dart:convert';
 import 'package:http_parser/http_parser.dart';
 import 'package:flutter/foundation.dart' show kIsWeb, Uint8List;
 
@@ -60,6 +66,10 @@ class _ProfileButtonState extends State<ProfileButton> {
 
   @override
   Widget build(BuildContext context) {
+    // Use MediaQuery to detect small screen
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isSmallScreen = screenWidth < 600;
+
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => isHovered = true),
@@ -78,41 +88,47 @@ class _ProfileButtonState extends State<ProfileButton> {
                 : Colors.transparent,
             borderRadius: BorderRadius.circular(15),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircleAvatar(
-                radius: 18,
-                backgroundImage: widget.imageUrl.startsWith('http')
-                    ? NetworkImage(widget.imageUrl)
-                    : AssetImage(widget.imageUrl) as ImageProvider,
-                backgroundColor: Colors.grey[200],
-              ),
-              const SizedBox(width: 10),
-              Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.name,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: dark,
-                      fontFamily: 'Poppins',
+          child: isSmallScreen
+              ? CircleAvatar(
+                  radius: 18,
+                  backgroundImage: widget.imageUrl.startsWith('http')
+                      ? NetworkImage(widget.imageUrl)
+                      : AssetImage(widget.imageUrl) as ImageProvider,
+                  backgroundColor: Colors.grey[200],
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircleAvatar(
+                      radius: 18,
+                      backgroundImage: widget.imageUrl.startsWith('http')
+                          ? NetworkImage(widget.imageUrl)
+                          : AssetImage(widget.imageUrl) as ImageProvider,
+                      backgroundColor: Colors.grey[200],
                     ),
-                  ),
-                  Text(
-                    widget.role,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: dark,
-                      fontFamily: 'Poppins',
+                    const SizedBox(width: 10),
+                    Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.name,
+                          style: GoogleFonts.poppins(
+                            fontWeight: FontWeight.bold,
+                            color: dark,
+                          ),
+                        ),
+                        Text(
+                          widget.role,
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            color: dark,
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
-            ],
-          ),
+                  ],
+                ),
         ),
       ),
     );
@@ -157,11 +173,15 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
   String? _backgroundImageUrl;
   bool _isUploadingBackgroundImage = false;
 
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  static const String _aesKeyStorageKey = 'app_aes_key_v1';
+  encrypt.Key? _cachedKey;
+
   bool _adminInfoLoaded = false;
   bool _settingsLoaded = false;
   bool _logoLoaded = false;
 
-  Map<String, dynamic> _loadedSettings = {}; // For auditing what changed
+  Map<String, dynamic> _loadedSettings = {}; 
 
   bool get _allDataLoaded => _adminInfoLoaded && _settingsLoaded && _logoLoaded;
 
@@ -175,10 +195,7 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
 
   Future<void> _loadApplicationLogo() async {
     try {
-      final doc = await FirebaseFirestore.instance
-          .collection('SystemSettings')
-          .doc('global')
-          .get();
+      final doc = await FirebaseFirestore.instance.collection('SystemSettings').doc('global').get();
       if (doc.exists) {
         final data = doc.data()!;
         setState(() {
@@ -204,17 +221,12 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user != null) {
-        final doc = await FirebaseFirestore.instance
-            .collection('SuperAdmin')
-            .doc(user.uid)
-            .get();
+        final doc = await FirebaseFirestore.instance.collection('SuperAdmin').doc(user.uid).get();
         if (doc.exists) {
           setState(() {
             firstName = capitalizeEachWord(doc['firstName'] ?? '');
             lastName = capitalizeEachWord(doc['lastName'] ?? '');
-            // The following line fetches and updates the profilePictureUrl if it exists
-            profilePictureUrl =
-                doc['profilePicture'] ?? "assets/images/defaultDP.jpg";
+            profilePictureUrl = doc['profilePicture'] ?? "assets/images/defaultDP.jpg";
             _adminInfoLoaded = true;
           });
         } else {
@@ -229,12 +241,151 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
     }
   }
 
-  Future<void> _loadSystemSettings() async {
+  Future<encrypt.Key> _getOrCreateAesKey() async {
+    if (_cachedKey != null) return _cachedKey!;
+    
     try {
       final doc = await FirebaseFirestore.instance
           .collection('SystemSettings')
-          .doc('global')
+          .doc('encryption_key')
           .get();
+      
+      if (doc.exists && doc.data()?['key'] != null) {
+        final keyBase64 = doc.data()!['key'] as String;
+        final keyBytes = base64Decode(keyBase64);
+        
+        // Cache locally for faster access
+        await _secureStorage.write(
+          key: _aesKeyStorageKey,
+          value: keyBase64,
+          aOptions: const AndroidOptions(encryptedSharedPreferences: true),
+          iOptions: const IOSOptions(),
+        );
+        
+        _cachedKey = encrypt.Key(keyBytes);
+        print('✅ Settings: Loaded encryption key from Firestore');
+        return _cachedKey!;
+      }
+    } catch (e) {
+      print('⚠️ Settings: Error loading key from Firestore: $e');
+    }
+    
+    final existing = await _secureStorage.read(key: _aesKeyStorageKey);
+    if (existing != null) {
+      final bytes = base64Decode(existing);
+      _cachedKey = encrypt.Key(bytes);
+      print('✅ Settings: Loaded encryption key from local storage');
+      return _cachedKey!;
+    }
+    
+    final generated = encrypt.Key.fromSecureRandom(32);
+    final keyBase64 = base64Encode(generated.bytes);
+    
+    try {
+      await FirebaseFirestore.instance
+          .collection('SystemSettings')
+          .doc('encryption_key')
+          .set({
+        'key': keyBase64,
+        'createdAt': FieldValue.serverTimestamp(),
+        'version': 'v1',
+      });
+      print('✅ Settings: Created new encryption key in Firestore');
+    } catch (e) {
+      print('⚠️ Settings: Could not save key to Firestore: $e');
+    }
+    
+    await _secureStorage.write(
+      key: _aesKeyStorageKey,
+      value: keyBase64,
+      aOptions: const AndroidOptions(encryptedSharedPreferences: true),
+      iOptions: const IOSOptions(),
+    );
+    
+    _cachedKey = generated;
+    print('✅ Settings: Created new encryption key locally');
+    return _cachedKey!;
+  }
+
+  Future<String?> _decryptValue(String encoded) async {
+    if (encoded.isEmpty) return null;
+    
+    try {
+      final key = await _getOrCreateAesKey();
+      final combined = base64Decode(encoded);
+      
+      if (combined.length < 17) {
+        print('⚠️ Encrypted data too short');
+        return null;
+      }
+      
+      final ivBytes = combined.sublist(0, 16);
+      final cipherBytes = combined.sublist(16);
+      final iv = encrypt.IV(ivBytes);
+      final encrypter = encrypt.Encrypter(encrypt.AES(key, mode: encrypt.AESMode.cbc));
+      final encrypted = encrypt.Encrypted(cipherBytes);
+      
+      return encrypter.decrypt(encrypted, iv: iv);
+    } catch (e) {
+      print('❌ Decryption failed: $e');
+      return null;
+    }
+  }
+
+  Future<String?> _encryptValue(String plainText) async {
+    if (plainText.isEmpty) return null;
+
+    try {
+      final key = await _getOrCreateAesKey();
+      final iv = encrypt.IV.fromSecureRandom(16);
+      final encrypter = encrypt.Encrypter(encrypt.AES(key, mode: encrypt.AESMode.cbc));
+      final encrypted = encrypter.encrypt(plainText, iv: iv);
+
+      final combinedBytes = iv.bytes + encrypted.bytes;
+      return base64Encode(combinedBytes);
+    } catch (e) {
+      print('❌ Encryption failed: $e');
+      return null;
+    }
+  }
+
+  Future<String> _loadSuperAdminEmail() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return 'Unknown';
+      
+      final doc = await FirebaseFirestore.instance
+          .collection('SuperAdmin')
+          .doc(user.uid)
+          .get();
+      
+      if (!doc.exists) return 'Unknown';
+      
+      final data = doc.data()!;
+      final encryptedEmail = data['email'];
+      
+      if (encryptedEmail == null) {
+        return user.email ?? 'Unknown';
+      }
+      
+      final decryptedEmail = await _decryptValue(encryptedEmail);
+      
+      if (decryptedEmail != null && decryptedEmail.isNotEmpty) {
+        print('✅ Successfully decrypted Super Admin email');
+        return decryptedEmail;
+      } else {
+        print('⚠️ Email decryption failed, using Firebase Auth email');
+        return user.email ?? 'Unknown';
+      }
+    } catch (e) {
+      print('❌ Error loading Super Admin email: $e');
+      return FirebaseAuth.instance.currentUser?.email ?? 'Unknown';
+    }
+  }
+
+  Future<void> _loadSystemSettings() async {
+    try {
+      final doc = await FirebaseFirestore.instance.collection('SystemSettings').doc('global').get();
 
       if (doc.exists) {
         final data = doc.data()!;
@@ -266,7 +417,6 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
               });
             }
           }
-          // Store loaded values for auditing
           _loadedSettings = {
             'siteName': data['siteName'] ?? '',
             'tagline': data['tagline'] ?? '',
@@ -283,7 +433,7 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
             'universityLogoUrl': data['universityLogoUrl'] ?? null,
             'applicationLogoUrl': data['applicationLogoUrl'] ?? null,
             'backgroundImageUrl': data['backgroundImageUrl'] ?? null,
-            'faqs': List.from(data['faqs'] ?? []), // clone the list
+            'faqs': List.from(data['faqs'] ?? []), 
           };
           _settingsLoaded = true;
         });
@@ -311,7 +461,7 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
         _supportFacebookController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Text('Please fill in all required fields.'),
+          content: Text('Please fill in all required fields.', style: GoogleFonts.poppins()),
           backgroundColor: Colors.red,
           duration: const Duration(seconds: 2),
           behavior: SnackBarBehavior.floating,
@@ -331,54 +481,40 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
           (category == null || category.trim().isEmpty)) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Please fill in all FAQ fields.'),
+            content: Text('Please fill in all FAQ fields.', style: GoogleFonts.poppins()),
             backgroundColor: Colors.red,
             duration: const Duration(seconds: 2),
             behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           ),
         );
         return;
       }
     }
 
-    // == SECTION CHANGE DETECTION FOR AUDIT LOG ==
     List<String> updatedSections = [];
     bool adminWebsiteInfoChanged =
-        _siteNameController.text.trim() !=
-            (_loadedSettings['siteName'] ?? '') ||
-        _taglineController.text.trim() != (_loadedSettings['tagline'] ?? '') ||
-        _descriptionController.text.trim() !=
-            (_loadedSettings['description'] ?? '');
+        _siteNameController.text.trim() != (_loadedSettings['siteName'] ?? '') ||
+            _taglineController.text.trim() != (_loadedSettings['tagline'] ?? '') ||
+            _descriptionController.text.trim() != (_loadedSettings['description'] ?? '');
 
     bool applicationInfoChanged =
         _appNameController.text.trim() != (_loadedSettings['appName'] ?? '') ||
-        _tagline1Controller.text.trim() !=
-            (_loadedSettings['tagline1'] ?? '') ||
-        _description1Controller.text.trim() !=
-            (_loadedSettings['description1'] ?? '') ||
-        _tagline2Controller.text.trim() !=
-            (_loadedSettings['tagline2'] ?? '') ||
-        _description2Controller.text.trim() !=
-            (_loadedSettings['description2'] ?? '');
+        _tagline1Controller.text.trim() != (_loadedSettings['tagline1'] ?? '') ||
+        _description1Controller.text.trim() != (_loadedSettings['description1'] ?? '') ||
+        _tagline2Controller.text.trim() != (_loadedSettings['tagline2'] ?? '') ||
+        _description2Controller.text.trim() != (_loadedSettings['description2'] ?? '');
 
     bool logoImagesChanged =
         _universityLogoUrl != (_loadedSettings['universityLogoUrl'] ?? null) ||
-        _applicationLogoUrl !=
-            (_loadedSettings['applicationLogoUrl'] ?? null) ||
+        _applicationLogoUrl != (_loadedSettings['applicationLogoUrl'] ?? null) ||
         _backgroundImageUrl != (_loadedSettings['backgroundImageUrl'] ?? null);
 
     bool supportContactChanged =
-        _supportEmailController.text.trim() !=
-            (_loadedSettings['supportEmail'] ?? '') ||
-        _supportPhoneController.text.trim() !=
-            (_loadedSettings['supportPhone'] ?? '') ||
-        _supportWebsiteController.text.trim() !=
-            (_loadedSettings['supportWebsite'] ?? '') ||
-        _supportFacebookController.text.trim() !=
-            (_loadedSettings['supportFacebook'] ?? '');
+        _supportEmailController.text.trim() != (_loadedSettings['supportEmail'] ?? '') ||
+        _supportPhoneController.text.trim() != (_loadedSettings['supportPhone'] ?? '') ||
+        _supportWebsiteController.text.trim() != (_loadedSettings['supportWebsite'] ?? '') ||
+        _supportFacebookController.text.trim() != (_loadedSettings['supportFacebook'] ?? '');
 
     bool faqsChanged = false;
     final List<Map<String, String>> currentFaqs = _faqControllers.map((faq) {
@@ -388,6 +524,7 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
         'category': faq['category'] as String,
       };
     }).toList();
+    
     if (currentFaqs.length != (_loadedSettings['faqs'] as List).length) {
       faqsChanged = true;
     } else {
@@ -402,26 +539,23 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
         }
       }
     }
-    if (adminWebsiteInfoChanged)
-      updatedSections.add("Admin Website Information");
+    
+    if (adminWebsiteInfoChanged) updatedSections.add("Admin Website Information");
     if (applicationInfoChanged) updatedSections.add("Application Information");
     if (logoImagesChanged) updatedSections.add("Logo & Images");
     if (supportContactChanged) updatedSections.add("Chat Support Contact");
     if (faqsChanged) updatedSections.add("Frequently Asked Questions");
 
     String actionMessage = "Updated System Settings";
-    // Build a specific description based on what sections changed
     String description;
     if (updatedSections.isEmpty) {
       description = "System settings were saved, but no changes detected.";
     } else if (updatedSections.length == 1) {
       description = "${updatedSections[0]} were updated.";
     } else if (updatedSections.length == 2) {
-      description =
-          "${updatedSections[0]} and ${updatedSections[1]} were updated.";
+      description = "${updatedSections[0]} and ${updatedSections[1]} were updated.";
     } else {
-      description =
-          updatedSections.sublist(0, updatedSections.length - 1).join(', ') +
+      description = updatedSections.sublist(0, updatedSections.length - 1).join(', ') +
           " and ${updatedSections.last} were updated.";
     }
 
@@ -434,54 +568,57 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
         };
       }).toList();
 
-      await FirebaseFirestore.instance
-          .collection('SystemSettings')
-          .doc('global')
-          .set({
-            'siteName': _siteNameController.text.trim(),
-            'appName': _appNameController.text.trim(),
-            'tagline': _taglineController.text.trim(),
-            'tagline1': _tagline1Controller.text.trim(),
-            'description1': _description1Controller.text.trim(),
-            'tagline2': _tagline2Controller.text.trim(),
-            'description2': _description2Controller.text.trim(),
-            'description': _descriptionController.text.trim(),
-            'supportEmail': _supportEmailController.text.trim(),
-            'supportPhone': _supportPhoneController.text.trim(),
-            'supportWebsite': _supportWebsiteController.text.trim(),
-            'supportFacebook': _supportFacebookController.text.trim(),
-            'faqs': faqs,
-            'universityLogoUrl': _universityLogoUrl,
-            'applicationLogoUrl': _applicationLogoUrl,
-            'backgroundImageUrl': _backgroundImageUrl,
-          });
+      await FirebaseFirestore.instance.collection('SystemSettings').doc('global').set({
+        'siteName': _siteNameController.text.trim(),
+        'appName': _appNameController.text.trim(),
+        'tagline': _taglineController.text.trim(),
+        'tagline1': _tagline1Controller.text.trim(),
+        'description1': _description1Controller.text.trim(),
+        'tagline2': _tagline2Controller.text.trim(),
+        'description2': _description2Controller.text.trim(),
+        'description': _descriptionController.text.trim(),
+        'supportEmail': _supportEmailController.text.trim(),
+        'supportPhone': _supportPhoneController.text.trim(),
+        'supportWebsite': _supportWebsiteController.text.trim(),
+        'supportFacebook': _supportFacebookController.text.trim(),
+        'faqs': faqs,
+        'universityLogoUrl': _universityLogoUrl,
+        'applicationLogoUrl': _applicationLogoUrl,
+        'backgroundImageUrl': _backgroundImageUrl,
+      });
 
-      // === AUDIT LOGGING (write ONLY ONCE here!) ===
-      final user = FirebaseAuth.instance.currentUser;
+      final decryptedEmail = await _loadSuperAdminEmail();
+      final encryptedEmailForLog = await _encryptValue(decryptedEmail);
+
       final log = {
         'action': actionMessage,
         'description': description,
         'performedBy': '$firstName $lastName',
-        'email': user?.email ?? '',
+        'email': encryptedEmailForLog ?? 'encrypted_error', 
         'timestamp': FieldValue.serverTimestamp(),
+        'role': 'Super Admin',
       };
+      
       await FirebaseFirestore.instance.collection('AuditLogs').add(log);
+
+      print('✅ Audit log saved with encrypted email');
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Settings saved successfully!'),
+          content: Text('Settings saved successfully!', style: GoogleFonts.poppins(color: Colors.white)),
           backgroundColor: primarycolor,
           duration: const Duration(seconds: 2),
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         ),
       );
+      
       await _loadSystemSettings();
     } catch (e) {
       print('Error saving settings: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Failed to save settings.'),
+          content: Text('Failed to save settings.', style: GoogleFonts.poppins(color: Colors.white)),
           backgroundColor: Colors.red,
           duration: const Duration(seconds: 2),
           behavior: SnackBarBehavior.floating,
@@ -491,15 +628,12 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
     }
   }
 
-  Future<String?> uploadImageToCloudinary(XFile file) async {
+  Future<String?> uploadImageToCloudinary(XFile file, {required String preset}) async {
     try {
-      // Use your actual cloud name and preset below:
-      const cloudinaryUrl =
-          'https://api.cloudinary.com/v1_1/dvfwzl6gp/image/upload';
-      const uploadPreset = 'university_logo_preset';
+      const cloudinaryUrl = 'https://api.cloudinary.com/v1_1/dvfwzl6gp/image/upload';
 
       var request = http.MultipartRequest('POST', Uri.parse(cloudinaryUrl));
-      request.fields['upload_preset'] = uploadPreset;
+      request.fields['upload_preset'] = preset; // use the preset passed from the caller
 
       if (kIsWeb) {
         Uint8List fileBytes = await file.readAsBytes();
@@ -580,228 +714,266 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
       );
     }
 
-    return Scaffold(
-      backgroundColor: lightBackground,
-      drawer: NavigationDrawer(
-        applicationLogoUrl: _applicationLogoUrl,
-        activePage: "Settings",
+    final poppinsTextTheme = GoogleFonts.poppinsTextTheme(Theme.of(context).textTheme)
+        .apply(bodyColor: dark, displayColor: dark);
+
+    return Theme(
+      data: Theme.of(context).copyWith(
+        textTheme: poppinsTextTheme,
+        primaryTextTheme: poppinsTextTheme,
       ),
-      appBar: AppBar(
+      child: Scaffold(
         backgroundColor: lightBackground,
-        iconTheme: const IconThemeData(color: primarycolordark),
-        elevation: 0,
-        titleSpacing: 0,
-        title: const Row(
-          children: [
-            SizedBox(width: 12),
-            Text(
-              "System Settings",
-              style: TextStyle(
-                color: primarycolordark,
-                fontWeight: FontWeight.bold,
-                fontFamily: 'Poppins',
+        drawer: NavigationDrawer(
+          applicationLogoUrl: _applicationLogoUrl,
+          activePage: "Settings",
+        ),
+        appBar: AppBar(
+          backgroundColor: lightBackground,
+          iconTheme: const IconThemeData(color: primarycolordark),
+          elevation: 0,
+          titleSpacing: 0,
+          title: Row(
+            children: [
+              const SizedBox(width: 12),
+              Flexible(
+                child: Text(
+                  "System Settings",
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.poppins(
+                    color: primarycolordark,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            Padding(
+              padding: const EdgeInsets.only(right: 16.0),
+              child: ProfileButton(
+                imageUrl: profilePictureUrl,
+                name: fullName.trim().isNotEmpty ? fullName : "Loading...",
+                role: "Super Admin",
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const AdminProfilePage()),
+                  );
+                },
               ),
             ),
           ],
         ),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 16.0),
-            child: ProfileButton(
-              imageUrl: profilePictureUrl,
-              name: fullName.trim().isNotEmpty ? fullName : "Loading...",
-              role: "Super Admin",
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const AdminProfilePage()),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // DHVBot Information card with edit/save/cancel button at right
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: primarycolordark,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.info_outline, color: Colors.white),
-                  const SizedBox(width: 12),
-                  Text(
-                    '${_appNameDisplay.isNotEmpty ? _appNameDisplay : "App"} Information',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontFamily: 'Poppins',
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const Spacer(),
-                  ElevatedButton.icon(
-                    key: const ValueKey('edit_settings_button'),
-                    onPressed: () async {
-                      if (isEditing) {
-                        bool hasEmptyField =
-                            _siteNameController.text.trim().isEmpty ||
-                            _taglineController.text.trim().isEmpty ||
-                            _descriptionController.text.trim().isEmpty ||
-                            _supportEmailController.text.trim().isEmpty ||
-                            _supportPhoneController.text.trim().isEmpty ||
-                            _supportWebsiteController.text.trim().isEmpty ||
-                            _supportFacebookController.text.trim().isEmpty;
-
-                        for (var faq in _faqControllers) {
-                          final question =
-                              faq['question'] as TextEditingController?;
-                          final answer =
-                              faq['answer'] as TextEditingController?;
-                          final category = faq['category'] as String?;
-
-                          if ((question?.text.trim().isEmpty ?? true) ||
-                              (answer?.text.trim().isEmpty ?? true) ||
-                              (category == null || category.trim().isEmpty)) {
-                            hasEmptyField = true;
-                            break;
-                          }
-                        }
-
-                        if (hasEmptyField) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                'All fields including FAQs must be filled in.',
-                              ),
-                              backgroundColor: Colors.red,
-                              duration: const Duration(seconds: 2),
-                              behavior: SnackBarBehavior.floating,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                            ),
-                          );
-                          return;
-                        }
-                        await _saveSystemSettings();
-                      }
-
-                      setState(() {
-                        isEditing = !isEditing;
-                      });
-                    },
-                    icon: Icon(
-                      isEditing ? Icons.save : Icons.edit,
-                      color: Colors.white,
-                    ),
-                    label: Text(
-                      isEditing ? "Save Settings" : "Edit Settings",
-                      style: TextStyle(color: Colors.white),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: primarycolor,
-                      padding: EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 12,
+        body: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: primarycolordark,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.info_outline, color: Colors.white),
+                    const SizedBox(width: 12),
+                    Text(
+                      '${_appNameDisplay.isNotEmpty ? _appNameDisplay : "App"} Information',
+                      style: GoogleFonts.poppins(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
                       ),
-                      textStyle: TextStyle(fontFamily: 'Poppins'),
-                      elevation: 0,
                     ),
-                  ),
-                  if (isEditing) ...[
-                    const SizedBox(width: 8),
+                    const Spacer(),
                     ElevatedButton.icon(
+                      key: const ValueKey('edit_settings_button'),
                       onPressed: () async {
+                        if (isEditing) {
+                          bool hasEmptyField =
+                              _siteNameController.text.trim().isEmpty ||
+                                  _taglineController.text.trim().isEmpty ||
+                                  _descriptionController.text.trim().isEmpty ||
+                                  _supportEmailController.text.trim().isEmpty ||
+                                  _supportPhoneController.text.trim().isEmpty ||
+                                  _supportWebsiteController.text.trim().isEmpty ||
+                                  _supportFacebookController.text.trim().isEmpty;
+
+                          for (var faq in _faqControllers) {
+                            final question = faq['question'] as TextEditingController?;
+                            final answer = faq['answer'] as TextEditingController?;
+                            final category = faq['category'] as String?;
+
+                            if ((question?.text.trim().isEmpty ?? true) ||
+                                (answer?.text.trim().isEmpty ?? true) ||
+                                (category == null || category.trim().isEmpty)) {
+                              hasEmptyField = true;
+                              break;
+                            }
+                          }
+
+                          if (hasEmptyField) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  'All fields including FAQs must be filled in.',
+                                  style: GoogleFonts.poppins(),
+                                ),
+                                backgroundColor: Colors.red,
+                                duration: const Duration(seconds: 2),
+                                behavior: SnackBarBehavior.floating,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                              ),
+                            );
+                            return;
+                          }
+                          await _saveSystemSettings();
+                        }
+
                         setState(() {
-                          isEditing = false;
+                          isEditing = !isEditing;
                         });
-                        _loadSystemSettings(); // Revert changes
                       },
-                      icon: Icon(Icons.cancel, color: Colors.white),
+                      icon: Icon(
+                        isEditing ? Icons.save : Icons.edit,
+                        color: Colors.white,
+                      ),
                       label: Text(
-                        "Cancel",
-                        style: TextStyle(color: Colors.white),
+                        isEditing ? "Save Settings" : "Edit Settings",
+                        style: GoogleFonts.poppins(color: Colors.white),
                       ),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.grey[600],
-                        padding: EdgeInsets.symmetric(
+                        backgroundColor: primarycolor,
+                        padding: const EdgeInsets.symmetric(
                           horizontal: 20,
                           vertical: 12,
                         ),
-                        textStyle: TextStyle(fontFamily: 'Poppins'),
                         elevation: 0,
+                        textStyle: GoogleFonts.poppins(),
                       ),
                     ),
+                    if (isEditing) ...[
+                      const SizedBox(width: 8),
+                      ElevatedButton.icon(
+                        onPressed: () async {
+                          setState(() {
+                            isEditing = false;
+                          });
+                          _loadSystemSettings(); // Revert changes
+                        },
+                        icon: const Icon(Icons.cancel, color: Colors.white),
+                        label: Text(
+                          "Cancel",
+                          style: GoogleFonts.poppins(color: Colors.white),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.grey[600],
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 12,
+                          ),
+                          elevation: 0,
+                          textStyle: GoogleFonts.poppins(),
+                        ),
+                      ),
+                    ],
                   ],
-                ],
+                ),
               ),
-            ),
-            const SizedBox(height: 24),
-            _cardSection(
-              icon: Icons.description,
-              title: "Admin Website Information",
-              child: Column(
-                children: [
-                  _inputRow(
-                    "Name of the Website",
-                    _siteNameController,
-                    Icons.language,
-                  ),
-                  _inputRow("Tagline", _taglineController, Icons.loyalty),
-                  _inputRow(
-                    "Description",
-                    _descriptionController,
-                    Icons.message_outlined,
-                  ),
-                ],
+              const SizedBox(height: 24),
+              _cardSection(
+                icon: Icons.description,
+                title: "Admin Website Information",
+                child: Column(
+                  children: [
+                    _inputRow("Name of the Website", _siteNameController, Icons.language),
+                    _inputRow("Tagline", _taglineController, Icons.loyalty),
+                    _inputRow("Description", _descriptionController, Icons.message_outlined),
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(height: 24),
-            _cardSection(
-              icon: Icons.description,
-              title: "Application Information",
-              child: Column(
-                children: [
-                  _inputRow(
-                    "Name of the App",
-                    _appNameController,
-                    Icons.language,
-                  ),
-                  _inputRow("Tagline 1", _tagline1Controller, Icons.loyalty),
-                  _inputRow(
-                    "Description",
-                    _description1Controller,
-                    Icons.message_outlined,
-                  ),
-                  _inputRow("Tagline 2", _tagline2Controller, Icons.loyalty),
-                  _inputRow(
-                    "Description 2",
-                    _description2Controller,
-                    Icons.message_outlined,
-                  ),
-                ],
+              const SizedBox(height: 24),
+              _cardSection(
+                icon: Icons.description,
+                title: "Application Information",
+                child: Column(
+                  children: [
+                    _inputRow("Name of the App", _appNameController, Icons.language),
+                    _inputRow("Tagline 1", _tagline1Controller, Icons.loyalty),
+                    _inputRow("Description", _description1Controller, Icons.message_outlined),
+                    _inputRow("Tagline 2", _tagline2Controller, Icons.loyalty),
+                    _inputRow("Description 2", _description2Controller, Icons.message_outlined),
+                  ],
+                ),
               ),
-            ),
-            SizedBox(height: 24),
-            _cardSection(
-              icon: Icons.image_outlined,
-              title: "Logo & Images",
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final isWide = constraints.maxWidth > 800;
-                  if (isWide) {
-                    return Row(
-                      children: [
-                        Expanded(
-                          child: _imageUploader(
+              const SizedBox(height: 24),
+              _cardSection(
+                icon: Icons.image_outlined,
+                title: "Logo & Images",
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final isWide = constraints.maxWidth > 800;
+                    if (isWide) {
+                      return Row(
+                        children: [
+                          Expanded(
+                            child: _imageUploader(
+                              context,
+                              "University Logo",
+                              _universityLogoUrl,
+                              "assets/images/DHVSU-LOGO.png",
+                              isEditing,
+                              (url) async {
+                                setState(() {
+                                  _universityLogoUrl = url;
+                                });
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: _imageUploader(
+                              context,
+                              "Application Logo",
+                              _applicationLogoUrl,
+                              "assets/images/dhvbot.png",
+                              isEditing,
+                              (url) async {
+                                setState(() {
+                                  _applicationLogoUrl = url;
+                                });
+                              },
+                              isApplicationLogo: true,
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: _imageUploader(
+                              context,
+                              "Background Image",
+                              _backgroundImageUrl,
+                              "assets/images/dhvbot.png",
+                              isEditing,
+                              (url) async {
+                                setState(() {
+                                  _backgroundImageUrl = url;
+                                });
+                              },
+                              isBackgroundImage: true,
+                            ),
+                          ),
+                        ],
+                      );
+                    } else {
+                      return Column(
+                        children: [
+                          _imageUploader(
                             context,
                             "University Logo",
                             _universityLogoUrl,
@@ -813,10 +985,8 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
                               });
                             },
                           ),
-                        ),
-                        SizedBox(width: 16),
-                        Expanded(
-                          child: _imageUploader(
+                          const SizedBox(height: 16),
+                          _imageUploader(
                             context,
                             "Application Logo",
                             _applicationLogoUrl,
@@ -829,10 +999,8 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
                             },
                             isApplicationLogo: true,
                           ),
-                        ),
-                        SizedBox(width: 16),
-                        Expanded(
-                          child: _imageUploader(
+                          const SizedBox(height: 16),
+                          _imageUploader(
                             context,
                             "Background Image",
                             _backgroundImageUrl,
@@ -845,145 +1013,78 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
                             },
                             isBackgroundImage: true,
                           ),
-                        ),
-                      ],
-                    );
-                  } else {
-                    return Column(
-                      children: [
-                        _imageUploader(
-                          context,
-                          "University Logo",
-                          _universityLogoUrl,
-                          "assets/images/DHVSU-LOGO.png",
-                          isEditing,
-                          (url) async {
-                            setState(() {
-                              _universityLogoUrl = url;
-                            });
-                          },
-                        ),
-                        SizedBox(height: 16),
-                        _imageUploader(
-                          context,
-                          "Application Logo",
-                          _applicationLogoUrl,
-                          "assets/images/dhvbot.png",
-                          isEditing,
-                          (url) async {
-                            setState(() {
-                              _applicationLogoUrl = url;
-                            });
-                          },
-                          isApplicationLogo: true,
-                        ),
-                        SizedBox(height: 16),
-                        _imageUploader(
-                          context,
-                          "Background Image",
-                          _backgroundImageUrl,
-                          "assets/images/dhvbot.png",
-                          isEditing,
-                          (url) async {
-                            setState(() {
-                              _backgroundImageUrl = url;
-                            });
-                          },
-                          isBackgroundImage: true,
-                        ),
-                      ],
-                    );
-                  }
-                },
-              ),
-            ),
-            SizedBox(height: 24),
-            _cardSection(
-              icon: Icons.support_agent,
-              title: "Chat Support Contact",
-              child: Column(
-                children: [
-                  SizedBox(height: 16),
-                  _inputRow(
-                    "Support Website",
-                    _supportWebsiteController,
-                    Icons.language,
-                  ),
-                  _inputRow(
-                    "Support Facebook",
-                    _supportFacebookController,
-                    Icons.facebook,
-                  ),
-                  _inputRow(
-                    "Support Email",
-                    _supportEmailController,
-                    Icons.email_outlined,
-                  ),
-                  _inputRow(
-                    "Support Phone",
-                    _supportPhoneController,
-                    Icons.phone,
-                  ),
-                ],
-              ),
-            ),
-            SizedBox(height: 24),
-            _cardSection(
-              icon: Icons.question_answer_outlined,
-              title: "Frequently Asked Questions",
-              child: Column(
-                children: [
-                  ListView.builder(
-                    shrinkWrap: true,
-                    physics: NeverScrollableScrollPhysics(),
-                    itemCount: _faqControllers.length,
-                    itemBuilder: (context, index) {
-                      var faq = _faqControllers[index];
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: 16.0),
-                        child: _faqItem(
-                          faq["question"]!,
-                          faq["answer"]!,
-                          faq["category"] ?? "General",
-                          (newCategory) {
-                            setState(() {
-                              faq["category"] = newCategory;
-                            });
-                          },
-                        ),
+                        ],
                       );
-                    },
-                  ),
-                  if (isEditing)
-                    Center(
-                      child: TextButton.icon(
-                        onPressed: () {
-                          setState(() {
-                            _faqControllers.add({
-                              "question": TextEditingController(),
-                              "answer": TextEditingController(),
-                              "category": "Choose Category",
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(height: 24),
+              _cardSection(
+                icon: Icons.support_agent,
+                title: "Chat Support Contact",
+                child: Column(
+                  children: [
+                    const SizedBox(height: 16),
+                    _inputRow("Support Website", _supportWebsiteController, Icons.language),
+                    _inputRow("Support Facebook", _supportFacebookController, Icons.facebook),
+                    _inputRow("Support Email", _supportEmailController, Icons.email_outlined),
+                    _inputRow("Support Phone", _supportPhoneController, Icons.phone),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 24),
+              _cardSection(
+                icon: Icons.question_answer_outlined,
+                title: "Frequently Asked Questions",
+                child: Column(
+                  children: [
+                    ListView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: _faqControllers.length,
+                      itemBuilder: (context, index) {
+                        var faq = _faqControllers[index];
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 16.0),
+                          child: _faqItem(
+                            faq["question"]!,
+                            faq["answer"]!,
+                            faq["category"] ?? "General",
+                            (newCategory) {
+                              setState(() {
+                                faq["category"] = newCategory;
+                              });
+                            },
+                          ),
+                        );
+                      },
+                    ),
+                    if (isEditing)
+                      Center(
+                        child: TextButton.icon(
+                          onPressed: () {
+                            setState(() {
+                              _faqControllers.add({
+                                "question": TextEditingController(),
+                                "answer": TextEditingController(),
+                                "category": "Choose Category",
+                              });
                             });
-                          });
-                        },
-                        icon: Icon(
-                          Icons.add_circle_outline,
-                          color: secondarycolor,
-                        ),
-                        label: Text(
-                          "Add FAQ",
-                          style: TextStyle(
-                            color: secondarycolor,
-                            fontFamily: 'Poppins',
+                          },
+                          icon: const Icon(Icons.add_circle_outline),
+                          label: Text(
+                            "Add FAQ",
+                            style: GoogleFonts.poppins(color: secondarycolor),
                           ),
                         ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
-            ),
-            SizedBox(height: 24),
-          ],
+              const SizedBox(height: 24),
+            ],
+          ),
         ),
       ),
     );
@@ -1006,20 +1107,19 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
             Row(
               children: [
                 Icon(icon, color: primarycolordark),
-                SizedBox(width: 8),
+                const SizedBox(width: 8),
                 Text(
                   title,
-                  style: TextStyle(
+                  style: GoogleFonts.poppins(
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
-                    fontFamily: 'Poppins',
                     color: primarycolordark,
                   ),
                 ),
               ],
             ),
-            Divider(),
-            SizedBox(height: 10),
+            const Divider(),
+            const SizedBox(height: 10),
             child,
           ],
         ),
@@ -1033,12 +1133,11 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
     IconData icon,
   ) {
     return Padding(
-      padding: EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.symmetric(vertical: 8),
       child: TextField(
         controller: controller,
         readOnly: !isEditing,
-        style: TextStyle(
-          fontFamily: 'Poppins',
+        style: GoogleFonts.poppins(
           color: dark,
           fontWeight: FontWeight.w500,
         ),
@@ -1047,15 +1146,13 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
           prefixIcon: Icon(icon, color: primarycolor),
           filled: true,
           fillColor: Colors.white,
-          contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 18),
-          labelStyle: TextStyle(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+          labelStyle: GoogleFonts.poppins(
             color: dark,
-            fontFamily: 'Poppins',
             fontWeight: FontWeight.w500,
           ),
-          floatingLabelStyle: TextStyle(
+          floatingLabelStyle: GoogleFonts.poppins(
             color: primarycolordark,
-            fontFamily: 'Poppins',
             fontWeight: FontWeight.bold,
           ),
           enabledBorder: OutlineInputBorder(
@@ -1084,11 +1181,11 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
     List<String> categories = ['General', 'Account', 'Service', 'Others'];
 
     return Container(
-      padding: EdgeInsets.all(16),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
-        boxShadow: [
+        boxShadow: const [
           BoxShadow(color: Colors.black12, blurRadius: 6, offset: Offset(0, 3)),
         ],
       ),
@@ -1098,33 +1195,24 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
           TextField(
             controller: question,
             readOnly: !isEditing,
-            style: TextStyle(
-              fontFamily: 'Poppins',
+            style: GoogleFonts.poppins(
               fontWeight: FontWeight.w500,
               color: dark,
             ),
             decoration: InputDecoration(
               labelText: 'Question',
-              prefixIcon: Icon(
-                Icons.question_answer_outlined,
-                color: primarycolor,
-              ),
+              prefixIcon: const Icon(Icons.question_answer_outlined, color: primarycolor),
               filled: true,
               fillColor: Colors.white,
-              labelStyle: TextStyle(
-                fontFamily: 'Poppins',
+              labelStyle: GoogleFonts.poppins(
                 color: dark,
                 fontWeight: FontWeight.w500,
               ),
-              floatingLabelStyle: TextStyle(
+              floatingLabelStyle: GoogleFonts.poppins(
                 color: primarycolordark,
-                fontFamily: 'Poppins',
                 fontWeight: FontWeight.bold,
               ),
-              contentPadding: EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 18,
-              ),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
               enabledBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide(color: secondarycolor, width: 1.5),
@@ -1135,38 +1223,28 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
               ),
             ),
           ),
-
-          SizedBox(height: 12),
+          const SizedBox(height: 12),
           TextField(
             controller: answer,
             readOnly: !isEditing,
-            style: TextStyle(
-              fontFamily: 'Poppins',
+            style: GoogleFonts.poppins(
               fontWeight: FontWeight.w500,
               color: dark,
             ),
             decoration: InputDecoration(
               labelText: 'Answer',
-              prefixIcon: Icon(
-                Icons.text_snippet_outlined,
-                color: primarycolor,
-              ),
+              prefixIcon: const Icon(Icons.text_snippet_outlined, color: primarycolor),
               filled: true,
               fillColor: Colors.white,
-              labelStyle: TextStyle(
-                fontFamily: 'Poppins',
+              labelStyle: GoogleFonts.poppins(
                 color: dark,
                 fontWeight: FontWeight.w500,
               ),
-              floatingLabelStyle: TextStyle(
+              floatingLabelStyle: GoogleFonts.poppins(
                 color: primarycolordark,
-                fontFamily: 'Poppins',
                 fontWeight: FontWeight.bold,
               ),
-              contentPadding: EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 18,
-              ),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
               enabledBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide(color: secondarycolor, width: 1.5),
@@ -1177,8 +1255,7 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
               ),
             ),
           ),
-
-          SizedBox(height: 12),
+          const SizedBox(height: 12),
           isEditing
               ? DropdownButtonFormField<String>(
                   value: categories.contains(category) ? category : 'General',
@@ -1188,11 +1265,7 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
                           value: cat,
                           child: Text(
                             cat,
-                            style: TextStyle(
-                              fontFamily: 'Poppins',
-                              color: dark,
-                              fontWeight: FontWeight.w500,
-                            ),
+                            style: GoogleFonts.poppins(color: dark, fontWeight: FontWeight.w500),
                           ),
                         ),
                       )
@@ -1200,41 +1273,23 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
                   onChanged: (value) {
                     if (value != null) onCategoryChanged(value);
                   },
-                  style: TextStyle(
-                    fontFamily: 'Poppins',
-                    color: dark,
-                    fontWeight: FontWeight.w500,
-                  ),
+                  style: GoogleFonts.poppins(color: dark, fontWeight: FontWeight.w500),
                   dropdownColor: Colors.white,
                   decoration: InputDecoration(
                     labelText: 'Category',
-                    prefixIcon: Icon(Icons.category, color: primarycolor),
+                    prefixIcon: const Icon(Icons.category, color: primarycolor),
                     filled: true,
                     fillColor: Colors.white,
-                    labelStyle: TextStyle(
-                      fontFamily: 'Poppins',
-                      color: dark,
-                      fontWeight: FontWeight.w500,
-                    ),
-                    floatingLabelStyle: TextStyle(
-                      color: primarycolordark,
-                      fontFamily: 'Poppins',
-                      fontWeight: FontWeight.bold,
-                    ),
-                    contentPadding: EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 18,
-                    ),
+                    labelStyle: GoogleFonts.poppins(color: dark, fontWeight: FontWeight.w500),
+                    floatingLabelStyle: GoogleFonts.poppins(color: primarycolordark, fontWeight: FontWeight.bold),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
                     enabledBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
                       borderSide: BorderSide(color: secondarycolor, width: 1.5),
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(
-                        color: primarycolordark,
-                        width: 1.6,
-                      ),
+                      borderSide: BorderSide(color: primarycolordark, width: 1.6),
                     ),
                   ),
                 )
@@ -1243,48 +1298,29 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
                   controller: TextEditingController(text: category),
                   decoration: InputDecoration(
                     labelText: 'Category',
-                    prefixIcon: Icon(Icons.category, color: primarycolor),
+                    prefixIcon: const Icon(Icons.category, color: primarycolor),
                     filled: true,
                     fillColor: Colors.white,
-                    labelStyle: TextStyle(
-                      fontFamily: 'Poppins',
-                      color: dark,
-                      fontWeight: FontWeight.w500,
-                    ),
-                    floatingLabelStyle: TextStyle(
-                      color: primarycolordark,
-                      fontFamily: 'Poppins',
-                      fontWeight: FontWeight.bold,
-                    ),
-                    contentPadding: EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 18,
-                    ),
+                    labelStyle: GoogleFonts.poppins(color: dark, fontWeight: FontWeight.w500),
+                    floatingLabelStyle: GoogleFonts.poppins(color: primarycolordark, fontWeight: FontWeight.bold),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
                     disabledBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
                       borderSide: BorderSide(color: secondarycolor, width: 1.5),
                     ),
                   ),
-                  style: TextStyle(
-                    fontFamily: 'Poppins',
-                    fontWeight: FontWeight.w500,
-                    color: dark,
-                  ),
+                  style: GoogleFonts.poppins(fontWeight: FontWeight.w500, color: dark),
                 ),
-
-          SizedBox(height: 12),
+          const SizedBox(height: 12),
           if (isEditing)
             Align(
               alignment: Alignment.centerRight,
               child: IconButton(
-                icon: Icon(Icons.delete_outline, color: Colors.red),
+                icon: const Icon(Icons.delete_outline, color: Colors.red),
                 onPressed: () {
                   setState(() {
                     _faqControllers.removeWhere(
-                      (item) =>
-                          item["question"] == question &&
-                          item["answer"] == answer &&
-                          item["category"] == category,
+                      (item) => item["question"] == question && item["answer"] == answer && item["category"] == category,
                     );
                   });
                 },
@@ -1295,7 +1331,6 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
     );
   }
 
-  // Modified image uploader for University Logo, Application Logo, and Background Image with Cloudinary
   Widget _imageUploader(
     BuildContext context,
     String title,
@@ -1309,21 +1344,20 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
     final isUploading = isBackgroundImage
         ? _isUploadingBackgroundImage
         : isApplicationLogo
-        ? _isUploadingApplicationLogo
-        : _isUploadingUniversityLogo;
+            ? _isUploadingApplicationLogo
+            : _isUploadingUniversityLogo;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           title,
-          style: TextStyle(
+          style: GoogleFonts.poppins(
             fontWeight: FontWeight.bold,
-            fontFamily: 'Poppins',
             fontSize: 14,
             color: dark,
           ),
         ),
-        SizedBox(height: 8),
+        const SizedBox(height: 8),
         Container(
           width: double.infinity,
           height: 180,
@@ -1336,7 +1370,7 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
             children: [
               Expanded(
                 child: Padding(
-                  padding: EdgeInsets.all(8.0),
+                  padding: const EdgeInsets.all(8.0),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(8),
                     child: imageUrl != null
@@ -1353,18 +1387,19 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
                   ),
                 ),
               ),
-              Divider(height: 1),
+              const Divider(height: 1),
               Padding(
-                padding: EdgeInsets.all(6.0),
+                padding: const EdgeInsets.all(6.0),
                 child: isEditable
                     ? GestureDetector(
                         onTap: isUploading
                             ? null
                             : () async {
                                 final ImagePicker picker = ImagePicker();
-                                final XFile? pickedFile = await picker
-                                    .pickImage(source: ImageSource.gallery);
+                                final XFile? pickedFile =
+                                    await picker.pickImage(source: ImageSource.gallery);
                                 if (pickedFile != null) {
+                                  // Start uploading
                                   setState(() {
                                     if (isBackgroundImage) {
                                       _isUploadingBackgroundImage = true;
@@ -1374,9 +1409,18 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
                                       _isUploadingUniversityLogo = true;
                                     }
                                   });
-                                  String? url = await uploadImageToCloudinary(
-                                    pickedFile,
-                                  );
+
+                                  // ← Add preset logic here
+                                  String preset = isApplicationLogo
+                                      ? 'app_logo_preset'
+                                      : isBackgroundImage
+                                          ? 'background_preset'
+                                          : 'university_logo_preset';
+
+                                  // Call upload function with preset
+                                  String? url = await uploadImageToCloudinary(pickedFile, preset: preset);
+
+                                  // Stop uploading
                                   setState(() {
                                     if (isBackgroundImage) {
                                       _isUploadingBackgroundImage = false;
@@ -1386,37 +1430,30 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
                                       _isUploadingUniversityLogo = false;
                                     }
                                   });
+
                                   if (url != null && onImageUploaded != null) {
                                     await onImageUploaded(url);
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       SnackBar(
-                                        content: Text(
-                                          '${title} updated successfully!',
-                                        ),
+                                        content: Text('${title} updated successfully!',
+                                            style: GoogleFonts.poppins()),
                                         backgroundColor: primarycolor,
                                         duration: const Duration(seconds: 2),
                                         behavior: SnackBarBehavior.floating,
                                         shape: RoundedRectangleBorder(
-                                          borderRadius: BorderRadius.circular(
-                                            8,
-                                          ),
-                                        ),
+                                            borderRadius: BorderRadius.circular(8)),
                                       ),
                                     );
                                   } else {
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       SnackBar(
-                                        content: Text(
-                                          'Failed to upload image.',
-                                        ),
+                                        content:
+                                            Text('Failed to upload image.', style: GoogleFonts.poppins()),
                                         backgroundColor: Colors.red,
                                         duration: const Duration(seconds: 2),
                                         behavior: SnackBarBehavior.floating,
                                         shape: RoundedRectangleBorder(
-                                          borderRadius: BorderRadius.circular(
-                                            8,
-                                          ),
-                                        ),
+                                            borderRadius: BorderRadius.circular(8)),
                                       ),
                                     );
                                   }
@@ -1424,30 +1461,22 @@ class _SystemSettingsPageState extends State<SystemSettingsPage> {
                               },
                         child: Row(
                           children: [
-                            Icon(Icons.upload_file, size: 16, color: dark),
-                            SizedBox(width: 6),
+                            const Icon(Icons.upload_file, size: 16),
+                            const SizedBox(width: 6),
                             Text(
                               isUploading ? "Uploading..." : "Choose File",
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontFamily: 'Poppins',
-                                color: dark,
-                              ),
+                              style: GoogleFonts.poppins(fontSize: 12, color: dark),
                             ),
                           ],
                         ),
                       )
                     : Row(
                         children: [
-                          Icon(Icons.upload_file, size: 16, color: dark),
-                          SizedBox(width: 6),
+                          const Icon(Icons.upload_file, size: 16),
+                          const SizedBox(width: 6),
                           Text(
                             "Choose File",
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontFamily: 'Poppins',
-                              color: dark,
-                            ),
+                            style: GoogleFonts.poppins(fontSize: 12, color: dark),
                           ),
                         ],
                       ),
@@ -1496,27 +1525,20 @@ class _HoverButtonState extends State<HoverButton> {
           duration: const Duration(milliseconds: 130),
           decoration: BoxDecoration(
             color: widget.isActive
-                ? primarycolor.withOpacity(0.25) // Active highlight
-                : (isHovered
-                      ? primarycolor.withOpacity(0.10) // Hover highlight
-                      : Colors.transparent),
+                ? primarycolor.withOpacity(0.25) 
+                : (isHovered ? primarycolor.withOpacity(0.10) : Colors.transparent),
             borderRadius: BorderRadius.circular(10),
           ),
           child: ListTile(
             leading: Icon(
               widget.icon,
-              color: widget.isActive
-                  ? primarycolordark
-                  : (widget.isLogout ? Colors.red : primarycolordark),
+              color: widget.isActive ? primarycolordark : (widget.isLogout ? Colors.red : primarycolordark),
             ),
             title: Text(
               widget.label ?? '',
-              style: TextStyle(
-                color: widget.isActive
-                    ? primarycolordark
-                    : (widget.isLogout ? Colors.red : primarycolordark),
+              style: GoogleFonts.poppins(
+                color: widget.isActive ? primarycolordark : (widget.isLogout ? Colors.red : primarycolordark),
                 fontWeight: widget.isActive ? FontWeight.bold : FontWeight.w600,
-                fontFamily: 'Poppins',
               ),
             ),
             onTap: widget.onPressed,
@@ -1530,16 +1552,11 @@ class _HoverButtonState extends State<HoverButton> {
         cursor: SystemMouseCursors.click,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 130),
-          transform: isHovered
-              ? (Matrix4.identity()..scale(1.07))
-              : Matrix4.identity(),
+          transform: isHovered ? (Matrix4.identity()..scale(1.07)) : Matrix4.identity(),
           child: TextButton(
             style: TextButton.styleFrom(
               foregroundColor: primarycolordark,
-              textStyle: const TextStyle(
-                fontFamily: 'Poppins',
-                fontWeight: FontWeight.w600,
-              ),
+              textStyle: GoogleFonts.poppins(fontWeight: FontWeight.w600),
             ),
             onPressed: widget.onPressed,
             child: widget.child ?? const SizedBox(),
@@ -1552,7 +1569,7 @@ class _HoverButtonState extends State<HoverButton> {
 
 class NavigationDrawer extends StatelessWidget {
   final String? applicationLogoUrl;
-  final String activePage; // holds current active page name
+  final String activePage; 
 
   const NavigationDrawer({
     super.key,
@@ -1569,8 +1586,7 @@ class NavigationDrawer extends StatelessWidget {
           DrawerHeader(
             decoration: const BoxDecoration(color: lightBackground),
             child: Center(
-              child:
-                  applicationLogoUrl != null && applicationLogoUrl!.isNotEmpty
+              child: applicationLogoUrl != null && applicationLogoUrl!.isNotEmpty
                   ? Image.network(
                       applicationLogoUrl!,
                       height: double.infinity,
@@ -1590,79 +1606,72 @@ class NavigationDrawer extends StatelessWidget {
           ),
           _drawerItem(context, Icons.dashboard_outlined, "Dashboard", () {
             Navigator.pop(context);
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => const SuperAdminDashboardPage(),
-              ),
-            );
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const SuperAdminDashboardPage()));
           }),
           _drawerItem(context, Icons.people_outline, "Users Info", () {
             Navigator.pop(context);
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const UserinfoPage()),
-            );
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const UserinfoPage()));
           }),
-          _drawerItem(context, Icons.chat_outlined, "Chat Logs", () {
-            Navigator.pop(context);
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const ChatsPage()),
-            );
-          }),
+          // _drawerItem(context, Icons.chat_outlined, "Chat Logs", () {
+          //   Navigator.pop(context);
+          //   Navigator.push(context, MaterialPageRoute(builder: (_) => const ChatsPage()));
+          // }),
           _drawerItem(context, Icons.feedback_outlined, "Feedbacks", () {
             Navigator.pop(context);
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const FeedbacksPage()),
-            );
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const FeedbacksPage()));
           }),
-          _drawerItem(
-            context,
-            Icons.admin_panel_settings_outlined,
-            "Admin Management",
-            () {
-              Navigator.pop(context);
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const AdminManagementPage()),
-              );
-            },
-          ),
-          _drawerItem(context, Icons.receipt_long_outlined, "Audit Logs", () {
+          _drawerItem(context, Icons.admin_panel_settings_outlined, "Admin Management", () {
             Navigator.pop(context);
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const AuditLogsPage()),
-            );
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminManagementPage()));
           }),
+          // _drawerItem(
+          //   context,
+          //   Icons.warning_amber_rounded,
+          //   "Emergency Requests",
+          //   () {
+          //     Navigator.pop(context);
+          //     Navigator.push(
+          //       context,
+          //       MaterialPageRoute(builder: (_) => const EmergencyRequestsPage()),
+          //     );
+          //   },
+          // ),
           _drawerItem(context, Icons.settings_outlined, "Settings", () {
             Navigator.pop(context);
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const SystemSettingsPage()),
-            );
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const SystemSettingsPage()));
+          }),
+          _drawerItem(context, Icons.receipt_long_outlined, "Audit Logs", () {
+            Navigator.pop(context);
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const AuditLogsPage()));
           }),
           const Spacer(),
-          _drawerItem(context, Icons.logout, "Logout", () {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (_) => const AdminLoginPage()),
-            );
-          }, isLogout: true),
+          _drawerItem(
+            context,
+            Icons.logout,
+            "Logout",
+            () async {
+              try {
+                await FirebaseAuth.instance.signOut();
+                Navigator.pushAndRemoveUntil(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AdminLoginPage()),
+                  (route) => false,
+                );
+              } catch (e) {
+                print("Logout error: $e");
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text("Logout failed. Please try again.", style: GoogleFonts.poppins())),
+                );
+              }
+            },
+            isLogout: true,
+          ),
         ],
       ),
     );
   }
 
-  Widget _drawerItem(
-    BuildContext context,
-    IconData icon,
-    String title,
-    VoidCallback onTap, {
-    bool isLogout = false,
-  }) {
+  Widget _drawerItem(BuildContext context, IconData icon, String title, VoidCallback onTap, {bool isLogout = false}) {
     return HoverButton(
       onPressed: onTap,
       isLogout: isLogout,
